@@ -19,7 +19,8 @@ interface LockOptions {
   stale: number;
   update: number;
   retries: {
-    forever: true;
+    retries: number;
+    factor: number;
     minTimeout: number;
     maxTimeout: number;
   };
@@ -37,6 +38,7 @@ export interface WorkerOptions {
   ) => Promise<ReleaseLock>;
   startGateway?: () => Promise<boolean>;
   request?: (route: string, body: unknown) => Promise<GatewayResult>;
+  remove?: (filePath: string) => Promise<void>;
   log: (event: string, fields?: Record<string, unknown>) => void;
   now?: () => number;
 }
@@ -98,6 +100,14 @@ function isPermanent(status: number | undefined): boolean {
   return status === 400 || status === 413 || status === 415 || status === 422;
 }
 
+function boundedError(error: unknown): { error: string } {
+  return {
+    error: error instanceof Error
+      ? error.message.slice(0, 300)
+      : String(error).slice(0, 300),
+  };
+}
+
 export async function runWorker(options: WorkerOptions): Promise<void> {
   const { config } = options;
   const now = options.now ?? Date.now;
@@ -106,6 +116,7 @@ export async function runWorker(options: WorkerOptions): Promise<void> {
     ((route: string, body: unknown) => gatewayRequest(route, body, config));
   const startGateway =
     options.startGateway ?? (() => defaultStartGateway(config));
+  const remove = options.remove ?? unlink;
   const acquireLock =
     options.acquireLock ??
     ((target: string, lockOptions: LockOptions) =>
@@ -113,22 +124,29 @@ export async function runWorker(options: WorkerOptions): Promise<void> {
 
   await mkdir(config.rootDir, { recursive: true, mode: 0o700 });
   let compromised = false;
-  const release = await acquireLock(config.rootDir, {
-    realpath: false,
-    stale: 180_000,
-    update: 10_000,
-    retries: {
-      forever: true,
-      minTimeout: 50,
-      maxTimeout: 1_000,
-    },
-    onCompromised: (error) => {
-      compromised = true;
-      options.log("lock_compromised", {
-        error: error.message.slice(0, 300),
-      });
-    },
-  });
+  let release: ReleaseLock;
+  try {
+    release = await acquireLock(config.rootDir, {
+      realpath: false,
+      stale: 180_000,
+      update: 10_000,
+      retries: {
+        retries: 120,
+        factor: 1,
+        minTimeout: 1_000,
+        maxTimeout: 1_000,
+      },
+      onCompromised: (error) => {
+        compromised = true;
+        options.log("lock_compromised", {
+          error: error.message.slice(0, 300),
+        });
+      },
+    });
+  } catch (error) {
+    options.log("lock_acquire_failed", boundedError(error));
+    return;
+  }
 
   try {
     const initial = await listPending(config.rootDir);
@@ -137,10 +155,17 @@ export async function runWorker(options: WorkerOptions): Promise<void> {
         !pending.capture &&
         now() - pending.mtimeMs > INCOMPLETE_TTL_MS
       ) {
-        await unlink(pending.path).catch(() => undefined);
-        options.log("incomplete_expired", {
-          pending: path.basename(pending.path, ".jsonl"),
-        });
+        try {
+          await remove(pending.path);
+          options.log("incomplete_expired", {
+            pending: path.basename(pending.path, ".jsonl"),
+          });
+        } catch (error) {
+          options.log("pending_delete_failed", {
+            pending: path.basename(pending.path, ".jsonl"),
+            ...boundedError(error),
+          });
+        }
       }
     }
 
@@ -156,43 +181,56 @@ export async function runWorker(options: WorkerOptions): Promise<void> {
       return;
     }
 
-    // Gateway 启动期间可能有新 Hook 完成, 获得锁后重新全量扫描.
-    const pendingFiles = await listPending(config.rootDir);
-    for (const pending of pendingFiles) {
-      if (compromised) return;
-      if (!pending.capture) continue;
+    let retained = false;
+    while (!compromised && !retained) {
+      // Gateway 启动和上一批投递期间可能有新 Hook 完成, 持锁重扫到静止.
+      const pendingFiles = await listPending(config.rootDir);
+      const complete = pendingFiles.filter((pending) => pending.capture);
+      if (complete.length === 0) break;
 
-      const captureRequest: CaptureRequest = {
-        user_content: pending.capture.userContent,
-        assistant_content: pending.capture.assistantContent,
-        session_key: `cursor:${pending.capture.conversationId}`,
-      };
-      const result = await request("/capture", captureRequest);
+      for (const pending of complete) {
+        if (compromised || !pending.capture) return;
 
-      if (compromised) return;
-      if (isSuccess(result.status)) {
-        await unlink(pending.path).catch(() => undefined);
-        options.log("capture_acked", {
-          pending: path.basename(pending.path, ".jsonl"),
+        const captureRequest: CaptureRequest = {
+          user_content: pending.capture.userContent,
+          assistant_content: pending.capture.assistantContent,
+          session_key: `cursor:${pending.capture.conversationId}`,
+        };
+        const result = await request("/capture", captureRequest);
+
+        if (compromised) return;
+        const pendingName = path.basename(pending.path, ".jsonl");
+        if (isSuccess(result.status) || isPermanent(result.status)) {
+          try {
+            await remove(pending.path);
+          } catch (error) {
+            options.log("pending_delete_failed", {
+              pending: pendingName,
+              ...boundedError(error),
+            });
+            retained = true;
+            break;
+          }
+          options.log(
+            isSuccess(result.status)
+              ? "capture_acked"
+              : "capture_permanent_error",
+            {
+              pending: pendingName,
+              status: result.status,
+            },
+          );
+          continue;
+        }
+
+        options.log("capture_retained", {
+          pending: pendingName,
           status: result.status,
+          error: result.error,
         });
-        continue;
+        retained = true;
+        break;
       }
-      if (isPermanent(result.status)) {
-        options.log("capture_permanent_error", {
-          pending: path.basename(pending.path, ".jsonl"),
-          status: result.status,
-        });
-        await unlink(pending.path).catch(() => undefined);
-        continue;
-      }
-
-      options.log("capture_retained", {
-        pending: path.basename(pending.path, ".jsonl"),
-        status: result.status,
-        error: result.error,
-      });
-      break;
     }
 
     if (options.sessionEndKey && !compromised) {
@@ -206,6 +244,10 @@ export async function runWorker(options: WorkerOptions): Promise<void> {
       });
     }
   } finally {
-    await release();
+    try {
+      await release();
+    } catch (error) {
+      options.log("lock_release_error", boundedError(error));
+    }
   }
 }

@@ -27,27 +27,35 @@ async function makeConfig(): Promise<CursorConfig> {
 }
 
 async function completePending(config: CursorConfig): Promise<string> {
+  return completePendingFor(config, "c1", "g1");
+}
+
+async function completePendingFor(
+  config: CursorConfig,
+  conversationId: string,
+  generationId: string,
+): Promise<string> {
   await appendPendingEvent(config.rootDir, {
     v: 1,
     event: "user",
-    conversation_id: "c1",
-    generation_id: "g1",
-    text: "问题",
+    conversation_id: conversationId,
+    generation_id: generationId,
+    text: `问题-${conversationId}`,
     at_ms: 1,
   });
   await appendPendingEvent(config.rootDir, {
     v: 1,
     event: "assistant",
-    conversation_id: "c1",
-    generation_id: "g1",
-    text: "回答",
+    conversation_id: conversationId,
+    generation_id: generationId,
+    text: `回答-${conversationId}`,
     at_ms: 2,
   });
   return appendPendingEvent(config.rootDir, {
     v: 1,
     event: "stop",
-    conversation_id: "c1",
-    generation_id: "g1",
+    conversation_id: conversationId,
+    generation_id: generationId,
     status: "completed",
     at_ms: 3,
   });
@@ -126,8 +134,8 @@ describe("runWorker", () => {
 
     await expect(access(file)).rejects.toMatchObject({ code: "ENOENT" });
     expect(options.request).toHaveBeenCalledWith("/capture", {
-      user_content: "问题",
-      assistant_content: "回答",
+      user_content: "问题-c1",
+      assistant_content: "回答-c1",
       session_key: "cursor:c1",
     });
   });
@@ -226,8 +234,8 @@ describe("runWorker", () => {
     expect(entries).toBe("");
   });
 
-  // stale 必须长于 Gateway 启动和 60 秒请求, heartbeat 必须持续更新.
-  it("配置可覆盖长请求的 proper-lockfile heartbeat", async () => {
+  // stale 必须覆盖长请求, 但等待者不能无限存活.
+  it("配置 heartbeat 和有限 120 秒等锁", async () => {
     const config = await makeConfig();
     const acquireLock = vi.fn().mockResolvedValue(vi.fn());
     const options = harness(config, { status: 200 });
@@ -240,9 +248,89 @@ describe("runWorker", () => {
       realpath: false,
       stale: 180_000,
       update: 10_000,
-      retries: expect.objectContaining({ forever: true }),
+      retries: {
+        retries: 120,
+        factor: 1,
+        minTimeout: 1_000,
+        maxTimeout: 1_000,
+      },
       onCompromised: expect.any(Function),
     }));
+  });
+
+  // owner 处理期间新增的 pending 必须由同一 owner 重扫.
+  it("成功处理后重扫新增 pending", async () => {
+    const config = await makeConfig();
+    await completePendingFor(config, "c1", "g1");
+    let createdSecond = false;
+    const request = vi.fn(async () => {
+      if (!createdSecond) {
+        createdSecond = true;
+        await completePendingFor(config, "c2", "g2");
+      }
+      return { status: 200 };
+    });
+    const options = harness(config, { status: 200 });
+    options.request = request;
+
+    await runWorker(options);
+
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  // ACK 后本地删除失败不能误报成功或立即重复发送.
+  it("pending 删除失败时保留并记录错误", async () => {
+    const config = await makeConfig();
+    const file = await completePending(config);
+    const remove = vi.fn().mockRejectedValue(new Error("permission denied"));
+    const options = {
+      ...harness(config, { status: 200 }),
+      remove,
+    };
+
+    await runWorker(options);
+
+    await expect(access(file)).resolves.toBeUndefined();
+    expect(options.log).toHaveBeenCalledWith(
+      "pending_delete_failed",
+      expect.objectContaining({ error: "permission denied" }),
+    );
+    expect(options.log).not.toHaveBeenCalledWith(
+      "capture_acked",
+      expect.anything(),
+    );
+  });
+
+  // compromised lock 已被库标记 released, release 的 ERELEASED 只能记日志.
+  it("release 失败不逃逸 worker", async () => {
+    const config = await makeConfig();
+    const release = vi.fn().mockRejectedValue(
+      Object.assign(new Error("already released"), { code: "ERELEASED" }),
+    );
+    const options = harness(config, { status: 200 });
+    options.acquireLock = vi.fn().mockResolvedValue(release);
+    options.sessionEndKey = "cursor:c1";
+
+    await expect(runWorker(options)).resolves.toBeUndefined();
+
+    expect(options.log).toHaveBeenCalledWith(
+      "lock_release_error",
+      expect.objectContaining({ error: "already released" }),
+    );
+  });
+
+  // 有限重试耗尽只退出当前 worker, pending 留给后续事件.
+  it("锁获取失败记录后退出", async () => {
+    const config = await makeConfig();
+    const options = harness(config, { status: 200 });
+    options.acquireLock = vi.fn().mockRejectedValue(new Error("lock timeout"));
+
+    await expect(runWorker(options)).resolves.toBeUndefined();
+
+    expect(options.log).toHaveBeenCalledWith(
+      "lock_acquire_failed",
+      expect.objectContaining({ error: "lock timeout" }),
+    );
   });
 
   // 两个 one-shot 必须串行持有同一 owner 区域.
