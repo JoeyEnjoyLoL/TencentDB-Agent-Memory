@@ -2,10 +2,11 @@
 
 ## 一句话方案
 
-Cursor Adapter 在 `stop` 时读取 transcript 最后一轮，并用一个 Buffer 写入完整 pending JSONL；`stop` 或 `sessionEnd` 唤醒 detached one-shot：
+Cursor Adapter 在顶层交互式 `sessionStart` 写 marker；`stop` 只在 marker 存在时读取 transcript 最后一轮，并用一个 Buffer 写入完整 pending JSONL。`stop` 或 `sessionEnd` 唤醒 detached one-shot：
 
 ```text
-Cursor stop → transcript → pending JSONL → detached one-shot → global lock → current Gateway
+sessionStart(false) → top-level marker
+stop → require marker → transcript → pending JSONL → detached one-shot → global lock → current Gateway
 ```
 
 前台不执行网络、Gateway 启动、健康检查和 pending 全量扫描。
@@ -16,9 +17,10 @@ v1 面向 Linux、macOS 的 Cursor 本地 IDE；Windows、Cursor CLI、Cursor Cl
 
 | 输入 | 前台行为 | 后台输出 |
 | --- | --- | --- |
-| `sessionStart` | 注入 L3、L2 导航和检索指南 | `additional_context` |
-| `stop` | 读取 transcript 最后完整轮次；一次 O_APPEND 写入 user、assistant、stop；spawn detached one-shot | `/capture` |
-| `sessionEnd` | spawn detached one-shot | best-effort `/session/end` |
+| 顶层交互式 `sessionStart` | 写入会话 marker；注入 L3、L2 导航和检索指南 | `additional_context` |
+| 后台或未分类 `sessionStart` | 清除同会话 marker；不注入 | `{}` |
+| `stop` | marker 存在时读取 transcript 最后完整轮次；一次 O_APPEND 写入 user、assistant、stop；无论是否分类都 spawn detached one-shot | `/capture` |
+| `sessionEnd` | spawn detached one-shot；清除会话 marker | best-effort `/session/end` |
 | MCP 调用 | L1 优先，需要证据时查 L0 | 两个只读搜索工具 |
 
 ```text
@@ -27,17 +29,17 @@ pending/<sha256(canonical_json([conversation_id, stop_generation_id]))>.jsonl
 
 one-shot 折叠 user、assistant 和 stop。完整 pending 只在 capture 2xx 或明确永久错误后删除；不完整 pending 在最后修改 24 小时后清理。
 
-`stop` 只读 `agent-transcripts` 下不超过 16 MiB 的指定 transcript，不读旧 pending；文件在读取期间变化则放弃当前 capture。完整三条 JSONL 记录在本地文件系统上单次 O_APPEND，不加 turn lock、不 `fsync`。写入中崩溃可能丢当前轮，掉电可能丢最后一轮，删除回滚可能重复投递。
+`stop` 只读可配置 transcript 根目录（默认 `<home>/.cursor/projects`）真实路径内、且位于 `agent-transcripts` 下、不超过 16 MiB 的指定 transcript；符号链接越界、文件在读取期间变化时放弃当前 capture。完整三条 JSONL 记录在本地文件系统上单次 O_APPEND，不加 turn lock、不 `fsync`。写入中崩溃可能丢当前轮，掉电可能丢最后一轮，删除回滚可能重复投递。
 
 one-shot 是短生命周期进程：
 
-1. 阻塞获取全局跨平台 Node 锁。
+1. 最多等待约 120 秒获取全局跨平台 Node 锁。
 2. 清理超时的不完整 pending。
 3. 有完整 pending 或 `sessionEnd` 请求时启动 Gateway。
-4. 扫描全部完整 pending，并串行投递。
+4. 扫描全部完整 pending并串行投递；成功处理一批后重复扫描，直到锁内安静。
 5. best-effort 处理 `/session/end` 后退出。
 
-锁必须保留：现有 `scripts/memory-tencentdb-ctl.sh:226-257` 是“检查端口 → spawn”，并发 one-shot 会重复拉起 Gateway。实现加入固定版本的 `proper-lockfile`，并验证 heartbeat 覆盖 Gateway 启动和超过 60 秒的持锁请求。
+锁必须保留：现有 `scripts/memory-tencentdb-ctl.sh:226-257` 是“检查端口 → spawn”，并发 one-shot 会重复拉起 Gateway。实现加入固定版本的 `proper-lockfile`，有限等待避免 detached worker 无限堆积，并验证 heartbeat 覆盖 Gateway 启动和超过 60 秒的持锁请求。
 
 | v1 包含 | v1 边界 |
 | --- | --- |
@@ -47,7 +49,7 @@ one-shot 是短生命周期进程：
 | Node 原生 fetch、Bearer、可配置 timeout | 未合并的 #316 client |
 | capture 2xx 前保留完整 pending | 服务端幂等、真实时间线、`l0_recorded > 0` |
 
-当前 checkout 已实现 Cursor Adapter、Hook binary、安装器和固定版本的 `proper-lockfile` 依赖，并已按 Linux spike 改为 transcript stop-only 采集；Hook timeout 与真·Background Agent 仍是发布门禁。
+当前 checkout 已实现 Cursor Adapter、Hook binary、安装器、顶层会话 marker、严格 transcript 根路径和固定版本的 `proper-lockfile` 依赖。未分类 `stop` 已 fail-closed，但 Hook timeout 与真·Background Agent 生命周期仍是发布门禁。
 
 ## 接受的 Gateway 语义
 
@@ -116,5 +118,6 @@ Cursor 会合并用户级与项目级 Hook，同一事件下两边命令都会�
 6. 不完整 pending 在 24 小时后由下次 one-shot 清理；完整 pending 不按 TTL 删除。
 7. Adapter 使用原生 fetch，不依赖 #316 client。
 8. `l0_recorded = 0` 仍视为 ACK；首轮竞态明确标为主干缺陷。
-9. spike 已覆盖 generation、detached、首轮注入和 transcript；Hook timeout 与真·Background Agent 补测后才关闭发布门禁。
+9. spike 已覆盖 generation、detached、首轮注入和 transcript；顶层会话 marker 对未分类 `stop` fail-closed，Hook timeout 与真·Background Agent 补测后才关闭发布门禁。
 10. 安装器阻止用户级与项目级 Adapter Hook 重复生效。
+11. worker 锁等待有限；锁 owner 重复扫描到安静，锁获取/释放和 pending 删除失败均写 bounded 日志并保留可重试数据。

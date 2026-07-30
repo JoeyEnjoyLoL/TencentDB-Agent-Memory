@@ -39,7 +39,7 @@
 - Adds: `CursorConfig.transcriptsRoot: string`
 - Changes: `appendTranscriptTurn(rootDir, transcriptsRoot, transcriptPath, conversationId, generationId, status, atMs)`
 
-- [ ] **Step 1: Write failing session, Hook, config and path tests**
+- [x] **Step 1: Write failing session, Hook, config and path tests**
 
 ```ts
 await handleHook(sessionStart({ is_background_agent: false }), deps);
@@ -54,13 +54,13 @@ expect(resolveCursorConfig({}, "/home/test", "/pkg", "/bin/cursor").transcriptsR
   .toBe("/home/test/.cursor/projects");
 ```
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 Run: `npx vitest run src/adapters/cursor/session.test.ts src/adapters/cursor/hooks.test.ts src/adapters/cursor/config.test.ts src/adapters/cursor/pending.test.ts`
 
 Expected: FAIL because session marker APIs and `transcriptsRoot` do not exist.
 
-- [ ] **Step 3: Implement minimal marker and root enforcement**
+- [x] **Step 3: Implement minimal marker and root enforcement**
 
 ```ts
 export function sessionMarkerPath(rootDir: string, conversationId: string): string {
@@ -83,13 +83,13 @@ if (!(await isTopLevelSession(deps.rootDir, conversationId))) {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify GREEN**
+- [x] **Step 4: Run tests to verify GREEN**
 
 Run: `npx vitest run src/adapters/cursor/session.test.ts src/adapters/cursor/hooks.test.ts src/adapters/cursor/config.test.ts src/adapters/cursor/pending.test.ts src/adapters/cursor/cli.test.ts`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/adapters/cursor/session.ts src/adapters/cursor/session.test.ts src/adapters/cursor/config.ts src/adapters/cursor/config.test.ts src/adapters/cursor/pending.ts src/adapters/cursor/pending.test.ts src/adapters/cursor/hooks.ts src/adapters/cursor/hooks.test.ts src/adapters/cursor/cli.ts src/adapters/cursor/cli.test.ts
@@ -106,7 +106,7 @@ git commit -m "fix: classify Cursor sessions before capture"
 - Changes: `LockOptions.retries` to finite retry options.
 - Preserves: `runWorker(options): Promise<void>`
 
-- [ ] **Step 1: Write failing worker tests**
+- [x] **Step 1: Write failing worker tests**
 
 ```ts
 expect(acquireLock).toHaveBeenCalledWith(
@@ -124,13 +124,13 @@ await runWorker(optionsWithPendingCreatedAfterFirstScan);
 expect(options.request).toHaveBeenCalledTimes(2);
 ```
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 Run: `npx vitest run src/adapters/cursor/worker.test.ts`
 
 Expected: FAIL because retries are infinite, release rejects and worker scans once.
 
-- [ ] **Step 3: Implement finite retry, rescan and deletion logging**
+- [x] **Step 3: Implement finite retry, rescan and deletion logging**
 
 ```ts
 retries: {
@@ -155,13 +155,13 @@ try {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify GREEN**
+- [x] **Step 4: Run tests to verify GREEN**
 
 Run: `npx vitest run src/adapters/cursor/worker.test.ts src/adapters/cursor/worker-lock.e2e.test.ts`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/adapters/cursor/worker.ts src/adapters/cursor/worker.test.ts
@@ -180,7 +180,7 @@ git commit -m "fix: bound Cursor worker lock waits"
 - Preserves all production CLI and installer signatures.
 - Changes installer JSON representation to `Record<string, unknown>`.
 
-- [ ] **Step 1: Write failing sensitive-log and type tests**
+- [x] **Step 1: Write failing sensitive-log and type tests**
 
 ```ts
 await main(["hook"], runtime('{"secret":"value",broken'));
@@ -192,7 +192,7 @@ Run: `npx vitest run src/adapters/cursor/cli.test.ts`
 
 Expected: FAIL because the raw JSON parser message is logged.
 
-- [ ] **Step 2: Implement fixed error classification**
+- [x] **Step 2: Implement fixed error classification**
 
 ```ts
 runtime.log("hook_input_error", {
@@ -200,7 +200,7 @@ runtime.log("hook_input_error", {
 });
 ```
 
-- [ ] **Step 3: Tighten installer and MCP test types**
+- [x] **Step 3: Tighten installer and MCP test types**
 
 ```ts
 type JsonObject = Record<string, unknown>;
@@ -214,7 +214,7 @@ function asObject(value: unknown): JsonObject | undefined {
 type RequestGateway = NonNullable<Parameters<typeof createCursorMcpServer>[1]>;
 ```
 
-- [ ] **Step 4: Run tests and typecheck**
+- [x] **Step 4: Run tests and typecheck**
 
 Run: `npx vitest run src/adapters/cursor/cli.test.ts src/adapters/cursor/installer.test.ts src/adapters/cursor/mcp.test.ts`
 
@@ -222,7 +222,7 @@ Run: `npx tsc --noEmit --pretty false 2>&1 | rg "src/adapters/cursor"`
 
 Expected: tests PASS; no Cursor source errors.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/adapters/cursor/cli.ts src/adapters/cursor/cli.test.ts src/adapters/cursor/installer.ts src/adapters/cursor/mcp.test.ts
@@ -239,7 +239,7 @@ git commit -m "fix: harden Cursor input and config types"
 **Interfaces:**
 - Documents the implemented session marker, finite wait and strict transcript root.
 
-- [ ] **Step 1: Update current behavior**
+- [x] **Step 1: Update current behavior**
 
 ```text
 sessionStart(false) → top-level marker
@@ -247,7 +247,7 @@ stop → require marker → transcript → pending
 sessionEnd → wake worker → clear marker
 ```
 
-- [ ] **Step 2: Run full verification**
+- [x] **Step 2: Run full verification**
 
 Run: `npx vitest run src/adapters/cursor`
 
@@ -259,7 +259,7 @@ Run: `git diff --check`
 
 Expected: all commands exit 0.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs/316base/prd.md docs/316base/spec.md docs/superpowers/plans/2026-07-30-cursor-adapter.md

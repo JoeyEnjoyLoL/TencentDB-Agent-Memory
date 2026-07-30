@@ -4,7 +4,7 @@
 
 **Goal:** 实现 `docs/316base/prd.md` 定义的 Cursor 本地 Adapter，并保留真实 Cursor Hook spike 作为发布门禁。
 
-**Architecture:** 单个 `memory-tencentdb-cursor` CLI 承载 Hook、detached one-shot、stdio MCP、安装和 spike 子命令。`stop` 读取 transcript 最后一轮并用一个 Buffer 追加完整 JSONL；one-shot 在 `proper-lockfile` 全局锁内启动 Gateway、串行投递并清理；安装器只合并 Adapter 自己的配置。
+**Architecture:** 单个 `memory-tencentdb-cursor` CLI 承载 Hook、detached one-shot、stdio MCP、安装和 spike 子命令。顶层交互式 `sessionStart` 写会话 marker；`stop` 只在 marker 存在时读取严格受限的 transcript，并用一个 Buffer 追加完整 JSONL。one-shot 有限等待 `proper-lockfile` 全局锁，在锁内重复扫描到安静；安装器只合并 Adapter 自己的配置。
 
 **Tech Stack:** TypeScript、Node.js 22、Vitest、`proper-lockfile@4.1.2`、`@modelcontextprotocol/sdk@1.30.0`
 
@@ -162,7 +162,7 @@ const release = await lockfile.lock(config.rootDir, {
   realpath: false,
   stale: 180_000,
   update: 10_000,
-  retries: { retries: Number.POSITIVE_INFINITY, minTimeout: 50, maxTimeout: 1_000 },
+  retries: { retries: 120, factor: 1, minTimeout: 1_000, maxTimeout: 1_000 },
   onCompromised: markCompromised,
 });
 ```
@@ -290,3 +290,5 @@ Expected: code and automated tests cover criteria 1-8 and 10; criterion 9 remain
 Spike evidence landed: [docs/spike/2026-07-30-linux-cursor-3.12.30.md](../../spike/2026-07-30-linux-cursor-3.12.30.md). Criterion 9 is **partial** (detached / first-turn / transcript / sync subagent OK; generation merge caveat; bg Task Stop missing; true Background Agent + Hook timeout untested).
 
 Agent transcript 复核见 [docs/spike-agent/INDEX.md](../../spike-agent/INDEX.md)：6/6 user 与最终 assistant 长度匹配，均有 `turn_ended`。实现已选择 transcript stop-only 并迁移删除旧 before/after Hook；真·Background Agent 与 Hook timeout 仍是发布门禁。
+
+Reviewer01 后续修复见 [2026-07-30-reviewer01-remediation.md](2026-07-30-reviewer01-remediation.md)：已加入会话 marker、严格 transcript 根路径、有限锁等待、锁内重复扫描和安全错误分类。

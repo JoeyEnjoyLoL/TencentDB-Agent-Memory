@@ -2,10 +2,13 @@
 
 ## 结论
 
-v1 保留薄 Outbox 与 detached one-shot。`stop` 从 transcript 提取最后完整轮次，每轮只有一个 append-only pending JSONL：
+v1 保留薄 Outbox 与 detached one-shot。顶层交互式 `sessionStart` 先写 marker；`stop` 只在 marker 存在时从 transcript 提取最后完整轮次，每轮只有一个 append-only pending JSONL：
 
 ```text
-Cursor stop
+sessionStart(false)
+  → top-level marker
+stop
+  → require marker
   → read last transcript turn
   → append-only pending JSONL
   → detached one-shot
@@ -62,7 +65,7 @@ spike 是 Adapter 安装启用与发布前门禁。在 Linux、macOS 的目标 C
 
 Linux / Cursor 3.12.30 已确认跨 Hook generation 关联不可靠；Agent 复核的 6 个可比轮次中，transcript 提取的 user/最终 assistant 长度与对应 Hook 记录均为 6/6 一致，且都有 `turn_ended`。因此采用 transcript 路径并删除生产 before/after 采集链。证据见 [docs/spike-agent/INDEX.md](../spike-agent/INDEX.md)。
 
-`sessionStart` 注入和 `sessionEnd` 通知仍是独立 Hook。Hook timeout、真·Background Agent 和后台 Task Stop 仍是发布门禁。
+`sessionStart` 用 `is_background_agent === false` 标记顶层交互式会话；后台或未分类会话不注入并清除同会话 marker。该 fail-closed 分类已实施，但不能替代真·Background Agent 生命周期证据。Hook timeout、真·Background Agent 和后台 Task Stop 仍是发布门禁。
 
 ## 可靠性边界
 
@@ -122,8 +125,10 @@ Gateway 未收到 `messages` 时，新 session 首次 capture 存在同毫秒竞
 
 ```mermaid
 flowchart TD
-  SS[sessionStart] --> C[L3/L2 context]
-  ST[stop] --> T[read last transcript turn]
+  SS[sessionStart false] --> K[top-level marker]
+  SS --> C[L3/L2 context]
+  ST[stop] --> K
+  K --> T[read last transcript turn]
   T --> J[pending JSONL]
   ST --> O[detached one-shot]
   SE[sessionEnd] --> O
@@ -149,13 +154,16 @@ flowchart TD
 
 | Hook | 前台行为 |
 | --- | --- |
-| `sessionStart` | 读取并返回 L3/L2 context；不 spawn |
-| `stop` | 读取 `transcript_path` 最后完整轮次；一次 O_APPEND 写入 user、assistant、stop；spawn detached one-shot |
-| `sessionEnd` | spawn 带 `sessionEnd` 请求的 detached one-shot |
+| 顶层交互式 `sessionStart` | 原子写入哈希命名的空 marker；读取并返回 L3/L2 context；不 spawn |
+| 后台或未分类 `sessionStart` | 清除同会话 marker；不注入；不 spawn |
+| `stop` | marker 存在时读取 `transcript_path` 最后完整轮次；一次 O_APPEND 写入 user、assistant、stop；无论是否分类都 spawn detached one-shot |
+| `sessionEnd` | spawn 带 `sessionEnd` 请求的 detached one-shot；清除会话 marker |
 
 生产安装器不注册 `beforeSubmitPrompt`、`afterAgentResponse`。升级时删除本 Adapter 旧版本在这两个事件下的 marker-owned command，保留其他工具配置。
 
-transcript 解析以最后一个 `turn_ended` 为边界，只处理前一个 `turn_ended` 之后的最后一轮：提取最后一条 user message 的 `<user_query>` 正文，以及该轮最后一条非空 assistant text。最后边界后若已有未完成 user/assistant、文件读取期间 size/mtime/ctime/inode 变化、路径不在 `agent-transcripts` 或文件超过 16 MiB，均不写 pending，但仍 fail-open 并唤醒 worker。
+会话 marker 位于 Adapter 根目录的 `sessions/`，文件名是 conversation id 的 SHA-256，内容为空；临时文件写入后原子 rename。marker 不存在或访问失败时 `stop` fail-closed，不读取 transcript。
+
+transcript 根目录可配置，默认 `<home>/.cursor/projects`。transcript 解析先校验根目录与目标文件的真实路径，拒绝符号链接越界；目标还必须位于 `agent-transcripts` 下。解析以最后一个 `turn_ended` 为边界，只处理前一个 `turn_ended` 之后的最后一轮：提取最后一条 user message 的 `<user_query>` 正文，以及该轮最后一条非空 assistant text。最后边界后若已有未完成 user/assistant、文件读取期间 size/mtime/ctime/inode 变化或文件超过 16 MiB，均不写 pending，但仍 fail-open 并唤醒 worker。
 
 v1 目标只 capture 顶层交互式 Agent；不注册 `subagentStart` / `subagentStop`。真·Background Agent 的 `stop` 行为尚未验证，因此生产发布门禁未关闭。
 
@@ -240,17 +248,18 @@ one-shot 只在自己获得全局锁后读取和删除文件。单次 write 在 
 
 one-shot 是短生命周期进程，每次处理后退出：
 
-1. 阻塞获取全局投递锁。
+1. 最多等待约 120 秒获取全局投递锁；失败记 bounded 日志并退出。
 2. 清理超过 24 小时的不完整 pending。
 3. 仅在有完整 pending 或 `sessionEnd` 请求时调用 `scripts/memory-tencentdb-ctl.sh start`。
 4. Gateway 可用后扫描全部完整 pending。
 5. 串行调用 `POST /capture`。
-6. 尝试可选的 best-effort `POST /session/end`。
-7. 释放锁并退出。
+6. 成功处理一批后重新扫描，直到锁内没有完整 pending。
+7. 尝试可选的 best-effort `POST /session/end`。
+8. 释放锁并退出；释放失败只记 bounded 日志。
 
 全局锁必须保留。`scripts/memory-tencentdb-ctl.sh:226-257` 的 `cmd_start` 是“检查端口 → spawn”，两个 one-shot 并发会重复拉起 Gateway。锁同时保证本地 HTTP 不并发，并让等待者在前一个扫描结束后再次全量扫描。
 
-Adapter 实现须加入并固定 `proper-lockfile` 依赖，不手写 PID、token、mtime 和 stale 接管协议。它锁 Cursor Adapter 根目录，开启持续阻塞重试和 mtime heartbeat；stale/update 配置须通过“Gateway 启动 + 超过 60 秒持锁请求”集成测试，期间不得出现第二个 owner。锁被判定 compromised 时退出并保留 pending。
+Adapter 实现须加入并固定 `proper-lockfile` 依赖，不手写 PID、token、mtime 和 stale 接管协议。它锁 Cursor Adapter 根目录，以 1 秒间隔最多重试 120 次，并持续更新 mtime heartbeat；stale/update 配置须通过“Gateway 启动 + 超过 60 秒持锁请求”集成测试，期间不得出现第二个 owner。锁被判定 compromised 时退出并保留 pending。
 
 只有 `stop` 和 `sessionEnd` 才启动 one-shot。任意一次 one-shot 都在锁内扫描所有 session，因此不需要 `sessionStart` 机会式 recover。
 
@@ -293,7 +302,7 @@ Cursor Hook timeout 与 HTTP timeout 是两个配置；前者以 spike 实测为
 | 完整 pending | 仅在 capture 2xx 或明确永久错误后删除 |
 | `cursor-hook.log` | 按大小上限轮转 |
 
-日志只保存 event、pending key、HTTP status 和 bounded 错误，不保存完整 user/assistant 内容。日志失败不阻塞 Hook 或 one-shot。
+日志只保存 event、pending key、HTTP status 和 bounded 错误，不保存完整 user/assistant 内容。Hook JSON 解析失败只记录固定 `invalid_json`，避免解析器错误带出输入片段。日志失败不阻塞 Hook 或 one-shot。
 
 ## 安装
 
@@ -324,6 +333,8 @@ Enterprise/Team 配置不在本地安装器的可控范围；发现固定 Adapte
 
 - transcript 只提取最后一个 `turn_ended` 封口的轮次。
 - 最后封口后已有未完成轮次、路径越界、读取中变化或超过 16 MiB 时拒绝 capture。
+- transcript 必须位于配置根目录真实路径内；符号链接越界时拒绝 capture。
+- 只有顶层交互式 `sessionStart` 写 marker 和注入；未分类 `stop` 不 capture。
 - `<user_query>` 包裹正文与最后一条非空 assistant text 可稳定提取。
 - `stop` 用一次 O_APPEND 写入完整 user、assistant、stop。
 - 崩溃截断行不妨碍后续完整行被折叠。
@@ -339,7 +350,9 @@ Enterprise/Team 配置不在本地安装器的可控范围；发现固定 Adapte
 - 2xx 是唯一成功边界，`l0_recorded = 0` 仍删除 pending。
 - timeout、retryable、鉴权、版本和未知错误保留完整 pending。
 - 两个 one-shot 在同一全局锁内串行；等待者获得锁后重新扫描。
+- 锁等待约 120 秒后退出；owner 重复扫描并处理持锁期间新增的 pending。
 - 持锁超过 Gateway 启动加 60 秒请求期间不发生 stale 接管；compromised lock 退出并保留 pending。
+- 锁获取、释放和 pending 删除失败写 bounded 日志；删除失败时 pending 保留。
 - `gatewayRequest()` 的 JSON、Bearer、timeout 与错误映射符合 Gateway。
 - `/session/end` 失败不产生持久状态。
 - 双作用域已有固定 Adapter 标识时安装器拒绝新增。
