@@ -14,6 +14,9 @@
 - `docs/gateway-persistence/` 只保留 Gateway 持久化内容。
 - 两个目录互不引用、互不声明依赖。
 - Cursor PRD 必须明确“本次只做 Adapter”。
+- 检索策略固定为“L3/L2 轻注入 + L1 优先搜索 + L0 证据回溯”。
+- recover 使用 30 秒 lease 的原子 claim；同会话按单调序号从旧到新投递。
+- 全局版本不兼容保留全部 spool；单条坏数据只隔离当前记录。
 - 本次不实施 Gateway 持久化代码。
 - 文档按摘要、范围、流程、细节、失败语义、验收渐进展开。
 
@@ -31,7 +34,7 @@
 
 - [ ] **Step 1: 重写 PRD**
 
-保留 Cursor Hooks、L2/L3 注入、MCP 配置、turn-state、durable spool、recover、end marker、客户端 HTTP 字段和错误处理。删除 strict ensure、JSONL、metadata、TdaiCore 下传、SQLite/TCVDB 迁移、确定性 message ID 和服务端验收。
+保留 Cursor Hooks、L2/L3 轻注入、L1/L0 主动检索顺序、MCP 配置、turn-state、durable spool、原子 claim、同会话 ordered drain、recover、end marker、客户端 HTTP 字段和错误处理。删除 strict ensure、JSONL、metadata、TdaiCore 下传、SQLite/TCVDB 迁移、确定性 message ID 和服务端验收。
 
 - [ ] **Step 2: 核验边界**
 
@@ -52,6 +55,16 @@ rg -n "本次只做 Adapter" docs/316base/prd.md
 ```
 
 Expected: 至少一处匹配。
+
+- [ ] **Step 4: 核验 review 修正**
+
+Run:
+
+```bash
+rg -n "L3/L2 轻注入.*L1 优先搜索.*L0 证据回溯|原子 claim|session_sequence|blocked-incompatible|单条坏数据" docs/316base/prd.md
+```
+
+Expected: 五类约束均有匹配。
 
 ### Task 2: Gateway 持久化 PRD
 
