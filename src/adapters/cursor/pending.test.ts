@@ -1,4 +1,11 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -201,7 +208,13 @@ describe("pending JSONL", () => {
   it("从 transcript 单次发布完整 pending", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "cursor-transcript-"));
     tempDirs.push(root);
-    const transcriptDir = path.join(root, "agent-transcripts", "conversation");
+    const projectsRoot = path.join(root, ".cursor", "projects");
+    const transcriptDir = path.join(
+      projectsRoot,
+      "project",
+      "agent-transcripts",
+      "conversation",
+    );
     await mkdir(transcriptDir, { recursive: true });
     const transcriptPath = path.join(transcriptDir, "transcript.jsonl");
     await writeFile(
@@ -221,6 +234,7 @@ describe("pending JSONL", () => {
 
     const file = await appendTranscriptTurn(
       root,
+      projectsRoot,
       transcriptPath,
       "c1",
       "stop-gen",
@@ -239,28 +253,63 @@ describe("pending JSONL", () => {
   it("拒绝非 transcript 路径和超大 transcript", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "cursor-transcript-limit-"));
     tempDirs.push(root);
+    const projectsRoot = path.join(root, ".cursor", "projects");
+    await mkdir(projectsRoot, { recursive: true });
     const outside = path.join(root, "other.jsonl");
     await writeFile(outside, "{}");
     await expect(appendTranscriptTurn(
       root,
+      projectsRoot,
       outside,
       "c1",
       "g1",
       "completed",
       1,
-    )).rejects.toThrow(/agent-transcripts/);
+    )).rejects.toThrow(/transcript root/);
 
-    const transcriptDir = path.join(root, "agent-transcripts");
+    const transcriptDir = path.join(
+      projectsRoot,
+      "project",
+      "agent-transcripts",
+    );
     await mkdir(transcriptDir, { recursive: true });
     const oversized = path.join(transcriptDir, "oversized.jsonl");
     await writeFile(oversized, Buffer.alloc(16 * 1024 * 1024 + 1));
     await expect(appendTranscriptTurn(
       root,
+      projectsRoot,
       oversized,
       "c1",
       "g1",
       "completed",
       1,
     )).rejects.toThrow(/too large/);
+  });
+
+  // projects 内的 symlink 不能把读取范围带到根目录外.
+  it("拒绝 transcript symlink 越过 projects 根目录", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "cursor-transcript-link-"));
+    tempDirs.push(root);
+    const projectsRoot = path.join(root, ".cursor", "projects");
+    const transcriptDir = path.join(
+      projectsRoot,
+      "project",
+      "agent-transcripts",
+    );
+    await mkdir(transcriptDir, { recursive: true });
+    const outside = path.join(root, "outside.jsonl");
+    await writeFile(outside, "{}");
+    const linked = path.join(transcriptDir, "linked.jsonl");
+    await symlink(outside, linked);
+
+    await expect(appendTranscriptTurn(
+      root,
+      projectsRoot,
+      linked,
+      "c1",
+      "g1",
+      "completed",
+      1,
+    )).rejects.toThrow(/transcript root/);
   });
 });

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { appendFile, mkdir } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 import { resolveCursorConfig, type CursorConfig } from "./config.js";
 import { buildSessionContext } from "./context.js";
@@ -65,7 +66,7 @@ export function createCursorCliRuntime(options: {
   executablePath?: string;
 }): CursorCliRuntime {
   const env = process.env;
-  const home = env.HOME ?? env.USERPROFILE ?? "/tmp";
+  const home = env.HOME ?? env.USERPROFILE ?? homedir();
   const executablePath = options.executablePath ?? process.argv[1] ?? "memory-tencentdb-cursor";
   const config = resolveCursorConfig(
     env,
@@ -168,6 +169,7 @@ export async function main(
       const result = await handleHook(payload, {
         dataDir: config.dataDir,
         rootDir: config.rootDir,
+        transcriptsRoot: config.transcriptsRoot,
         appendTranscript: runtime.appendTranscript,
         spawnWorker: (sessionEndKey) => {
           runtime.spawnDetached([

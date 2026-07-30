@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import path from "node:path";
 
 export interface CursorConfig {
@@ -8,6 +9,7 @@ export interface CursorConfig {
   captureTimeoutMs: number;
   ctlPath: string;
   executablePath: string;
+  transcriptsRoot: string;
 }
 
 type Env = Record<string, string | undefined>;
@@ -20,7 +22,7 @@ function positiveInt(value: string | undefined, fallback: number): number {
 
 export function resolveCursorConfig(
   env: Env = process.env,
-  home = env.HOME ?? env.USERPROFILE ?? "/tmp",
+  home = env.HOME ?? env.USERPROFILE ?? homedir(),
   packageRoot = process.cwd(),
   executablePath = process.argv[1] ?? "memory-tencentdb-cursor",
 ): CursorConfig {
@@ -44,5 +46,8 @@ export function resolveCursorConfig(
       env.MEMORY_TENCENTDB_CTL_PATH ??
       path.join(packageRoot, "scripts", "memory-tencentdb-ctl.sh"),
     executablePath,
+    transcriptsRoot:
+      env.MEMORY_TENCENTDB_CURSOR_TRANSCRIPTS_ROOT ??
+      path.join(home, ".cursor", "projects"),
   };
 }

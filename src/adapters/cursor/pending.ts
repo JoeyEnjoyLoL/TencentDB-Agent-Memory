@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { mkdir, open } from "node:fs/promises";
+import { mkdir, open, realpath } from "node:fs/promises";
 import path from "node:path";
 
 interface PendingBase {
@@ -181,14 +181,26 @@ export function extractTranscriptTurn(
 
 export async function appendTranscriptTurn(
   rootDir: string,
+  transcriptsRoot: string,
   transcriptPath: string,
   conversationId: string,
   generationId: string,
   status: string,
   atMs: number,
 ): Promise<string> {
-  const resolvedTranscriptPath = path.resolve(transcriptPath);
-  if (!resolvedTranscriptPath.split(path.sep).includes("agent-transcripts")) {
+  const [resolvedRoot, resolvedTranscriptPath] = await Promise.all([
+    realpath(transcriptsRoot),
+    realpath(transcriptPath),
+  ]);
+  const relative = path.relative(resolvedRoot, resolvedTranscriptPath);
+  if (
+    relative === ".." ||
+    relative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relative)
+  ) {
+    throw new Error("transcript path is outside transcript root");
+  }
+  if (!relative.split(path.sep).includes("agent-transcripts")) {
     throw new Error("transcript path is outside agent-transcripts");
   }
   const transcriptHandle = await open(resolvedTranscriptPath, constants.O_RDONLY);

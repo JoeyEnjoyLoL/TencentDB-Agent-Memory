@@ -81,13 +81,22 @@ describe("Cursor Hook", () => {
     const deps = {
       dataDir: "/data",
       rootDir: "/root",
+      transcriptsRoot: "/home/test/.cursor/projects",
       appendTranscript,
       spawnWorker,
       buildContext: vi.fn().mockResolvedValue("context"),
+      markTopLevel: vi.fn(),
+      isTopLevel: vi.fn().mockResolvedValue(true),
+      clearSession: vi.fn(),
       log: vi.fn(),
       now: () => 1,
     };
 
+    await handleHook({
+      hook_event_name: "sessionStart",
+      conversation_id: "c1",
+      is_background_agent: false,
+    }, deps);
     await handleHook({
       hook_event_name: "beforeSubmitPrompt",
       conversation_id: "c1",
@@ -120,6 +129,7 @@ describe("Cursor Hook", () => {
     expect(appendTranscript).toHaveBeenCalledTimes(1);
     expect(appendTranscript).toHaveBeenCalledWith(
       "/root",
+      "/home/test/.cursor/projects",
       "/transcript.jsonl",
       "c1",
       "g1",
@@ -139,14 +149,82 @@ describe("Cursor Hook", () => {
     }, {
       dataDir: "/data",
       rootDir: "/root",
+      transcriptsRoot: "/home/test/.cursor/projects",
       appendTranscript: vi.fn(),
       spawnWorker,
       buildContext: vi.fn(),
+      markTopLevel: vi.fn(),
+      isTopLevel: vi.fn().mockResolvedValue(true),
+      clearSession: vi.fn(),
       log: vi.fn(),
       now: () => 1,
     });
 
     expect(spawnWorker).toHaveBeenCalledWith("cursor:session-1");
+  });
+
+  // sessionStart 是 stop 唯一可靠的顶层/后台分类来源.
+  it("sessionStart 持久化顶层许可并排除后台会话", async () => {
+    const markTopLevel = vi.fn();
+    const clearSession = vi.fn();
+    const buildContext = vi.fn().mockResolvedValue("context");
+    const deps = {
+      dataDir: "/data",
+      rootDir: "/root",
+      transcriptsRoot: "/home/test/.cursor/projects",
+      appendTranscript: vi.fn(),
+      spawnWorker: vi.fn(),
+      buildContext,
+      markTopLevel,
+      isTopLevel: vi.fn(),
+      clearSession,
+      log: vi.fn(),
+      now: () => 1,
+    };
+
+    expect(await handleHook({
+      hook_event_name: "sessionStart",
+      conversation_id: "top",
+      is_background_agent: false,
+    }, deps)).toEqual({ additional_context: "context" });
+    expect(markTopLevel).toHaveBeenCalledWith("/root", "top");
+
+    expect(await handleHook({
+      hook_event_name: "sessionStart",
+      conversation_id: "bg",
+      is_background_agent: true,
+    }, deps)).toEqual({});
+    expect(clearSession).toHaveBeenCalledWith("/root", "bg");
+    expect(buildContext).toHaveBeenCalledTimes(1);
+  });
+
+  // 未经 sessionStart 明确许可的 stop 必须 fail-closed.
+  it("未分类 stop 不读取 transcript 但仍唤醒 worker", async () => {
+    const appendTranscript = vi.fn();
+    const spawnWorker = vi.fn();
+    const log = vi.fn();
+
+    await handleHook({
+      hook_event_name: "stop",
+      conversation_id: "unknown",
+      generation_id: "g1",
+      transcript_path: "/home/test/.cursor/projects/p/agent-transcripts/c.jsonl",
+    }, {
+      dataDir: "/data",
+      rootDir: "/root",
+      transcriptsRoot: "/home/test/.cursor/projects",
+      appendTranscript,
+      spawnWorker,
+      buildContext: vi.fn(),
+      markTopLevel: vi.fn(),
+      isTopLevel: vi.fn().mockResolvedValue(false),
+      clearSession: vi.fn(),
+      log,
+    });
+
+    expect(appendTranscript).not.toHaveBeenCalled();
+    expect(spawnWorker).toHaveBeenCalledOnce();
+    expect(log).toHaveBeenCalledWith("stop_skipped_unclassified");
   });
 
   // stop 字段异常时仍须 fail-open 唤醒 worker, 推进其他 pending.
@@ -161,9 +239,13 @@ describe("Cursor Hook", () => {
     }, {
       dataDir: "/data",
       rootDir: "/root",
+      transcriptsRoot: "/home/test/.cursor/projects",
       appendTranscript: vi.fn(),
       spawnWorker,
       buildContext: vi.fn(),
+      markTopLevel: vi.fn(),
+      isTopLevel: vi.fn().mockResolvedValue(true),
+      clearSession: vi.fn(),
       log,
     });
 
@@ -181,9 +263,13 @@ describe("Cursor Hook", () => {
     const deps = {
       dataDir: "/data",
       rootDir: "/root",
+      transcriptsRoot: "/home/test/.cursor/projects",
       appendTranscript,
       spawnWorker,
       buildContext: vi.fn(),
+      markTopLevel: vi.fn(),
+      isTopLevel: vi.fn().mockResolvedValue(true),
+      clearSession: vi.fn(),
       log: vi.fn(),
       now: () => 1,
     };
@@ -213,12 +299,17 @@ describe("Cursor Hook", () => {
     const result = await handleHook({
       hook_event_name: "sessionStart",
       conversation_id: "c1",
+      is_background_agent: false,
     }, {
       dataDir: "/data",
       rootDir: "/root",
+      transcriptsRoot: "/home/test/.cursor/projects",
       appendTranscript: vi.fn(),
       spawnWorker: vi.fn(),
       buildContext: vi.fn().mockRejectedValue(new Error("disk full")),
+      markTopLevel: vi.fn(),
+      isTopLevel: vi.fn().mockResolvedValue(true),
+      clearSession: vi.fn(),
       log,
       now: () => 1,
     });
@@ -244,9 +335,13 @@ describe("Cursor Hook", () => {
     }, {
       dataDir: "/data",
       rootDir: "/root",
+      transcriptsRoot: "/home/test/.cursor/projects",
       appendTranscript: vi.fn().mockRejectedValue(new Error("invalid transcript")),
       spawnWorker,
       buildContext: vi.fn(),
+      markTopLevel: vi.fn(),
+      isTopLevel: vi.fn().mockResolvedValue(true),
+      clearSession: vi.fn(),
       log,
       now: () => 1,
     });

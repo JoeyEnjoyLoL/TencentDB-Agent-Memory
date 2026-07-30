@@ -14,6 +14,7 @@ describe("resolveCursorConfig", () => {
       captureTimeoutMs: 60_000,
       ctlPath: path.join("/pkg", "scripts", "memory-tencentdb-ctl.sh"),
       executablePath: "/bin/cursor-memory",
+      transcriptsRoot: "/home/test/.cursor/projects",
     });
   });
 
@@ -25,6 +26,7 @@ describe("resolveCursorConfig", () => {
       MEMORY_TENCENTDB_GATEWAY_HOST: "localhost",
       MEMORY_TENCENTDB_GATEWAY_PORT: "9123",
       MEMORY_TENCENTDB_CURSOR_CAPTURE_TIMEOUT_MS: "70000",
+      MEMORY_TENCENTDB_CURSOR_TRANSCRIPTS_ROOT: "/cursor-projects",
       TDAI_GATEWAY_API_KEY: "secret",
     }, "/home/test", "/pkg", "/bin/cursor-memory");
 
@@ -33,6 +35,7 @@ describe("resolveCursorConfig", () => {
     expect(config.gatewayUrl).toBe("http://localhost:9123");
     expect(config.captureTimeoutMs).toBe(70_000);
     expect(config.gatewayApiKey).toBe("secret");
+    expect(config.transcriptsRoot).toBe("/cursor-projects");
   });
 
   // 非法数值不能把 timeout 或端口污染为 NaN.
