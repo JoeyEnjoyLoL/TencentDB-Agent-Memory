@@ -40,6 +40,7 @@
 
 - 请求包含非空 `messages` 时，保留数组顺序，逐条使用其 role 与 content。
 - 请求未包含 `messages` 时，依次生成 user 与 assistant 两条消息。
+- keyed 请求显式传入空 `messages` 时返回 400；legacy 请求保持现有行为。
 - `message_index` 从 `0` 开始，按规范化后的消息顺序递增。
 
 `canonical_json` 使用 UTF-8 JSON：对象键按 Unicode 码点升序排列，不写空白，数组保持顺序，`null` 保留，未提供字段不加入对象，字符串不做 Unicode 再归一化。
@@ -139,4 +140,5 @@ JSONL 与 metadata 都保存 `idempotency_key` 和 `capture_fingerprint`。
 8. 两侧 ensure 均成功后才推进 checkpoint。
 9. 同一作用域的不同 fingerprint 在服务重启后仍返回 409。
 10. 未携带 key 的调用方保持 legacy 行为。
-11. SQLite 完成 nullable 字段迁移，TCVDB schema 同步支持新字段。
+11. keyed 请求的空 `messages` 返回 400；未提供时生成 user 与 assistant 两条消息。
+12. SQLite 完成 nullable 字段迁移，TCVDB schema 同步支持新字段。
