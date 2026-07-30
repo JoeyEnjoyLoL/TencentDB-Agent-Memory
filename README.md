@@ -384,6 +384,22 @@ memory:
 ```
 
 
+### 4. Cursor IDE (local, Linux / macOS)
+
+In addition to OpenClaw and Hermes, this repository includes a **Cursor IDE**
+host adapter: Hooks capture the last transcript turn into pending JSONL, a
+detached worker posts to Gateway `/capture`, and two read-only MCP tools
+search L1/L0.
+
+```bash
+npm install && npm run build
+npx memory-tencentdb-cursor install --scope project   # or --scope user
+```
+
+Full guide: [`src/adapters/cursor/README.md`](./src/adapters/cursor/README.md).
+Compatible with the Gateway client kit in [#316](https://github.com/TencentCloud/TencentDB-Agent-Memory/pull/316) (Bearer/JSON routes; does not require #316 to merge).
+
+
 ## 🔒 Gateway Security (optional)
 
 The Hermes Gateway listens on `:8420` and exposes capture / search / recall HTTP endpoints. Two opt-in switches let you turn it from "open localhost sidecar" into "authenticated network service". **Both default to off so existing deployments keep working unchanged.**
@@ -537,6 +553,7 @@ Debugging no longer means probing an opaque database — it becomes a determinis
 | Document | Contents |
 | :--- | :--- |
 | [`scripts/README.memory-tencentdb-ctl.md`](./scripts/README.memory-tencentdb-ctl.md) | Operations & management tooling |
+| [`src/adapters/cursor/README.md`](./src/adapters/cursor/README.md) | Cursor IDE adapter (Hooks / MCP / install) |
 | [`CHANGELOG.md`](./CHANGELOG.md) | Release notes and version history |
 | [`openclaw.plugin.json`](./openclaw.plugin.json) | OpenClaw plugin manifest and configuration schema |
 
