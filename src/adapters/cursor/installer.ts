@@ -25,7 +25,13 @@ export interface CursorInstallOptions {
   executablePath: string;
 }
 
-type JsonObject = Record<string, any>;
+type JsonObject = Record<string, unknown>;
+
+function asObject(value: unknown): JsonObject | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as JsonObject
+    : undefined;
+}
 
 function scopeDir(
   scope: CursorInstallOptions["scope"],
@@ -87,18 +93,15 @@ function adapterCommand(executablePath: string): string {
 }
 
 function isOwnedHook(value: unknown, executablePath: string): boolean {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const command = (value as JsonObject).command;
-  return command === adapterCommand(executablePath);
+  return asObject(value)?.command === adapterCommand(executablePath);
 }
 
 function containsOwnedHook(
   value: unknown,
   executablePath: string,
 ): boolean {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const hooks = (value as JsonObject).hooks;
-  if (!hooks || typeof hooks !== "object" || Array.isArray(hooks)) return false;
+  const hooks = asObject(asObject(value)?.hooks);
+  if (!hooks) return false;
   return Object.values(hooks).some(
     (commands) =>
       Array.isArray(commands) &&
@@ -107,9 +110,8 @@ function containsOwnedHook(
 }
 
 function isOwnedMcp(value: unknown): boolean {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const entry = value as JsonObject;
-  return entry.env?.MEMORY_TENCENTDB_CURSOR_ADAPTER === CURSOR_ADAPTER_MARKER;
+  const env = asObject(asObject(value)?.env);
+  return env?.MEMORY_TENCENTDB_CURSOR_ADAPTER === CURSOR_ADAPTER_MARKER;
 }
 
 const RULE_CONTENT = `---
@@ -147,57 +149,49 @@ export async function installCursorAdapter(
   const hooksPath = path.join(targetDir, "hooks.json");
   const hooksConfig = await readJson(hooksPath);
   hooksConfig.version ??= 1;
-  if (
-    hooksConfig.hooks !== undefined &&
-    (
-      !hooksConfig.hooks ||
-      typeof hooksConfig.hooks !== "object" ||
-      Array.isArray(hooksConfig.hooks)
-    )
-  ) {
+  const hooks = hooksConfig.hooks === undefined
+    ? {}
+    : asObject(hooksConfig.hooks);
+  if (!hooks) {
     throw new Error("hooks conflict: expected a plain object");
   }
-  hooksConfig.hooks ??= {};
-  for (const [event, commands] of Object.entries(hooksConfig.hooks)) {
+  hooksConfig.hooks = hooks;
+  for (const [event, commands] of Object.entries(hooks)) {
     if (!Array.isArray(commands)) continue;
-    hooksConfig.hooks[event] = commands.filter(
+    hooks[event] = commands.filter(
       (hook) => !isOwnedHook(hook, options.executablePath),
     );
   }
   const command = adapterCommand(options.executablePath);
   for (const event of HOOK_EVENTS) {
-    const current = hooksConfig.hooks[event];
+    const current = hooks[event];
     if (current !== undefined && !Array.isArray(current)) {
       throw new Error(`Hook ${event} conflict: expected an array`);
     }
-    const existing = current ?? [];
+    const existing: unknown[] = current ?? [];
     if (!existing.some((hook) => isOwnedHook(hook, options.executablePath))) {
       existing.push({ command });
     }
-    hooksConfig.hooks[event] = existing;
+    hooks[event] = existing;
   }
 
   const mcpPath = path.join(targetDir, "mcp.json");
   const mcpConfig = await readJson(mcpPath);
-  if (
-    mcpConfig.mcpServers !== undefined &&
-    (
-      !mcpConfig.mcpServers ||
-      typeof mcpConfig.mcpServers !== "object" ||
-      Array.isArray(mcpConfig.mcpServers)
-    )
-  ) {
+  const mcpServers = mcpConfig.mcpServers === undefined
+    ? {}
+    : asObject(mcpConfig.mcpServers);
+  if (!mcpServers) {
     throw new Error("mcpServers conflict: expected a plain object");
   }
-  mcpConfig.mcpServers ??= {};
-  const currentMcp = mcpConfig.mcpServers[MCP_NAME];
+  mcpConfig.mcpServers = mcpServers;
+  const currentMcp = mcpServers[MCP_NAME];
   if (
     currentMcp !== undefined &&
     !isOwnedMcp(currentMcp)
   ) {
     throw new Error(`MCP ${MCP_NAME} conflict: entry is not owned by ${CURSOR_ADAPTER_MARKER}`);
   }
-  mcpConfig.mcpServers[MCP_NAME] = {
+  mcpServers[MCP_NAME] = {
     command: options.executablePath,
     args: ["mcp"],
     env: {
@@ -228,14 +222,11 @@ export async function uninstallCursorAdapter(
   const targetDir = scopeDir(options.scope, options);
   const hooksPath = path.join(targetDir, "hooks.json");
   const hooksConfig = await readJson(hooksPath);
-  if (
-    hooksConfig.hooks &&
-    typeof hooksConfig.hooks === "object" &&
-    !Array.isArray(hooksConfig.hooks)
-  ) {
-    for (const [event, commands] of Object.entries(hooksConfig.hooks)) {
+  const hooks = asObject(hooksConfig.hooks);
+  if (hooks) {
+    for (const [event, commands] of Object.entries(hooks)) {
       if (!Array.isArray(commands)) continue;
-      hooksConfig.hooks[event] = commands.filter(
+      hooks[event] = commands.filter(
         (command) => !isOwnedHook(command, options.executablePath),
       );
     }
@@ -246,14 +237,11 @@ export async function uninstallCursorAdapter(
 
   const mcpPath = path.join(targetDir, "mcp.json");
   const mcpConfig = await readJson(mcpPath);
-  if (
-    mcpConfig.mcpServers &&
-    typeof mcpConfig.mcpServers === "object" &&
-    !Array.isArray(mcpConfig.mcpServers)
-  ) {
-    const currentMcp = mcpConfig.mcpServers[MCP_NAME];
+  const mcpServers = asObject(mcpConfig.mcpServers);
+  if (mcpServers) {
+    const currentMcp = mcpServers[MCP_NAME];
     if (isOwnedMcp(currentMcp)) {
-      delete mcpConfig.mcpServers[MCP_NAME];
+      delete mcpServers[MCP_NAME];
     }
   }
   if (Object.keys(mcpConfig).length > 0) {

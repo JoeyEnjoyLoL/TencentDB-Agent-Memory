@@ -184,7 +184,7 @@ export async function main(
       runtime.writeStdout(`${JSON.stringify(result)}\n`);
     } catch (error) {
       runtime.log("hook_input_error", {
-        error: error instanceof Error ? error.message : String(error),
+        reason: error instanceof SyntaxError ? "invalid_json" : "invalid_payload",
       });
       runtime.writeStdout("{}\n");
     }

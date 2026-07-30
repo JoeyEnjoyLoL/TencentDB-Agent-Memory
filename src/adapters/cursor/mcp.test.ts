@@ -17,9 +17,14 @@ const config: CursorConfig = {
   captureTimeoutMs: 60_000,
   ctlPath: "/ctl",
   executablePath: "/bin/memory-tencentdb-cursor",
+  transcriptsRoot: "/home/test/.cursor/projects",
 };
 
-async function connect(request: ReturnType<typeof vi.fn>) {
+type RequestGateway = NonNullable<
+  Parameters<typeof createCursorMcpServer>[1]
+>;
+
+async function connect(request: RequestGateway) {
   const server = createCursorMcpServer(config, request);
   const client = new Client({ name: "test", version: "1.0.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -37,7 +42,7 @@ async function connect(request: ReturnType<typeof vi.fn>) {
 describe("Cursor MCP bridge", () => {
   // 暴露面严格限制为 L1 和 L0 两个只读搜索工具.
   it("只注册两个只读工具", async () => {
-    const client = await connect(vi.fn());
+    const client = await connect(vi.fn<RequestGateway>());
 
     const result = await client.listTools();
 
@@ -50,7 +55,7 @@ describe("Cursor MCP bridge", () => {
 
   // L1 参数原样映射到现有 Gateway 搜索端点.
   it("映射 memory search", async () => {
-    const request = vi.fn().mockResolvedValue({
+    const request = vi.fn<RequestGateway>().mockResolvedValue({
       status: 200,
       body: { results: "memory", total: 1, strategy: "fts" },
     });
@@ -76,7 +81,7 @@ describe("Cursor MCP bridge", () => {
 
   // L0 证据查询保留可选 session_key.
   it("映射 conversation search", async () => {
-    const request = vi.fn().mockResolvedValue({
+    const request = vi.fn<RequestGateway>().mockResolvedValue({
       status: 200,
       body: { results: "conversation", total: 1 },
     });
@@ -95,7 +100,7 @@ describe("Cursor MCP bridge", () => {
 
   // Gateway 非 2xx 以单次工具错误返回, 不扩展写入或回退行为.
   it("搜索失败返回 MCP 工具错误", async () => {
-    const client = await connect(vi.fn().mockResolvedValue({
+    const client = await connect(vi.fn<RequestGateway>().mockResolvedValue({
       status: 503,
       body: { error: "unavailable" },
     }));

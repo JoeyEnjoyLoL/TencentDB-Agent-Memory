@@ -56,11 +56,17 @@ describe("memory-tencentdb-cursor CLI", () => {
 
   // 无效 Hook 输入必须 fail-open, stdout 仍是合法 JSON.
   it("无效 Hook JSON fail-open", async () => {
-    const io = runtime("{broken");
+    const io = runtime("sensitive-prompt-is-not-json");
 
     expect(await main(["hook"], io)).toBe(0);
 
     expect(io.writeStdout).toHaveBeenCalledWith("{}\n");
+    expect(JSON.stringify(vi.mocked(io.log).mock.calls)).not.toContain(
+      "sensitive-prompt",
+    );
+    expect(io.log).toHaveBeenCalledWith("hook_input_error", {
+      reason: "invalid_json",
+    });
   });
 
   // spike 的 stop 事件额外生成 detached 存活证据.

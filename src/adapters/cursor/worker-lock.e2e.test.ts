@@ -24,6 +24,7 @@ describe("proper-lockfile heartbeat", () => {
       captureTimeoutMs: 60_000,
       ctlPath: "/ctl",
       executablePath: "/bin/memory-tencentdb-cursor",
+      transcriptsRoot: path.join(rootDir, ".cursor", "projects"),
     };
     await appendPendingEvent(rootDir, {
       v: 1,

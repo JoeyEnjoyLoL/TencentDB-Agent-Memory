@@ -23,6 +23,7 @@ async function makeConfig(): Promise<CursorConfig> {
     captureTimeoutMs: 60_000,
     ctlPath: "/pkg/scripts/memory-tencentdb-ctl.sh",
     executablePath: "/bin/memory-tencentdb-cursor",
+    transcriptsRoot: path.join(rootDir, ".cursor", "projects"),
   };
 }
 
