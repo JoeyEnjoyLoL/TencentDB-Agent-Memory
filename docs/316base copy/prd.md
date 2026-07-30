@@ -49,7 +49,7 @@ one-shot 是短生命周期进程：
 | Node 原生 fetch、Bearer、可配置 timeout | 未合并的 #316 client |
 | capture 2xx 前保留完整 pending | 服务端幂等、真实时间线、`l0_recorded > 0` |
 
-当前 checkout 已实现 Cursor Adapter、Hook binary、安装器和固定版本的 `proper-lockfile` 依赖；真实 Cursor spike 仍是发布门禁。
+当前 checkout 尚无 Cursor Adapter、Hook binary、安装器和 `proper-lockfile` 依赖；无待合并代码前置。
 
 ## 接受的 Gateway 语义
 

@@ -31,11 +31,11 @@ Cursor Hook
 | sequence、FIFO、claim、fencing | 不实现 |
 | daemon、常驻 worker pool | 不实现 |
 
-当前 checkout 已实现 Cursor Adapter、Hook binary 和安装器。v1 不等待未合并的 #316 client；Adapter 用 Node 原生 `fetch` 调用现有 Gateway。真实 Cursor spike 未通过前，不宣称发布验收完成。
+当前 checkout 尚无 Cursor Adapter、Hook binary 或安装器。v1 不等待未合并的 #316 client；Adapter 用 Node 原生 `fetch` 调用现有 Gateway。
 
 ## 实现前 Hook spike
 
-spike 是 Adapter 安装启用与发布前门禁。在 Linux、macOS 的目标 Cursor IDE 上记录真实事件，不用文档推断运行时；当前代码骨架可先实现和单测，但未通过 spike 前不得启用生产 capture 或宣称发布验收完成：
+spike 先于 Adapter 实现，在 Linux、macOS 的目标 Cursor IDE 上记录真实事件，不用文档推断运行时：
 
 1. 同一轮 `beforeSubmitPrompt`、全部 `afterAgentResponse`、`stop` 的 `generation_id` 是否相同。
 2. 一轮是否有多次 `afterAgentResponse`，且全部追加完成后才触发 `stop`。

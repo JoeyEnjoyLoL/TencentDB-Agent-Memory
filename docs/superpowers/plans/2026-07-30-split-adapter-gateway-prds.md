@@ -1,5 +1,7 @@
 # Adapter 与 Gateway PRD 拆分执行计划
 
+> **已废弃：** Cursor Adapter 的 claim、sequence、FIFO 方案已被 `docs/316base/prd.md` 的单 pending JSONL + detached one-shot 方案替代。当前实现计划见 `docs/superpowers/plans/2026-07-30-cursor-adapter.md`，不要继续执行本计划。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 将混合 PRD 拆成两个互不引用的目录，并明确本次只做 Cursor Adapter。
