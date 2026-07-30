@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { mkdir, open, stat } from "node:fs/promises";
 import path from "node:path";
@@ -31,7 +32,9 @@ export async function recordSpikeEvent(
       typeof payload.prompt === "string" ? payload.prompt.length : undefined,
     text_length:
       typeof payload.text === "string" ? payload.text.length : undefined,
-    transcript_path: transcriptPath,
+    transcript_path_hash: transcriptPath
+      ? createHash("sha256").update(transcriptPath, "utf8").digest("hex")
+      : undefined,
     transcript_exists: Boolean(transcriptInfo),
     transcript_size: transcriptInfo?.size,
     input_keys: Object.keys(payload).sort(),

@@ -2,17 +2,18 @@
 
 ## 结论
 
-v1 保留薄 Outbox 与 detached one-shot。每轮只有一个 append-only pending JSONL：
+v1 保留薄 Outbox 与 detached one-shot。`stop` 从 transcript 提取最后完整轮次，每轮只有一个 append-only pending JSONL：
 
 ```text
-Cursor Hook
+Cursor stop
+  → read last transcript turn
   → append-only pending JSONL
   → detached one-shot
   → global delivery lock
   → current Gateway
 ```
 
-前台 Hook 只做一次本地追加、读取必要上下文或 spawn，不执行 HTTP、Gateway 启动、健康检查和 pending 全量扫描。
+前台 Hook 只读取指定 transcript、做一次本地追加、读取必要上下文或 spawn，不执行 HTTP、Gateway 启动、健康检查和 pending 全量扫描。
 
 ## 范围
 
@@ -31,9 +32,11 @@ Cursor Hook
 | sequence、FIFO、claim、fencing | 不实现 |
 | daemon、常驻 worker pool | 不实现 |
 
-当前 checkout 已实现 Cursor Adapter、Hook binary 和安装器。v1 不等待未合并的 #316 client；Adapter 用 Node 原生 `fetch` 调用现有 Gateway。真实 Cursor spike 未通过前，不宣称发布验收完成。
+当前 checkout 已实现 Cursor Adapter、Hook binary 和安装器。v1 不等待未合并的 #316 client；Adapter 用 Node 原生 `fetch` 调用现有 Gateway。Linux transcript 采集门禁已通过；Hook timeout 与真·Background Agent 未闭环前，不宣称发布验收完成。
 
 ## 实现前 Hook spike
+
+> Linux / Cursor 3.12.30 实测快照见 [docs/spike/2026-07-30-linux-cursor-3.12.30.md](../spike/2026-07-30-linux-cursor-3.12.30.md)（索引：[docs/spike/INDEX.md](../spike/INDEX.md)）。以下条目仍是门禁定义；以最新 spike 报告为准更新「通过/改设计」状态。
 
 spike 是 Adapter 安装启用与发布前门禁。在 Linux、macOS 的目标 Cursor IDE 上记录真实事件，不用文档推断运行时；当前代码骨架可先实现和单测，但未通过 spike 前不得启用生产 capture 或宣称发布验收完成：
 
@@ -57,7 +60,9 @@ spike 是 Adapter 安装启用与发布前门禁。在 Linux、macOS 的目标 C
 | transcript 稳定且能无歧义还原本轮 | 采用 transcript 路径 |
 | transcript 不满足条件 | 采用 JSONL fallback |
 
-`transcript_path` 只可能简化 capture 采集链；`sessionStart` 注入和 `sessionEnd` 通知仍是独立 Hook。
+Linux / Cursor 3.12.30 已确认跨 Hook generation 关联不可靠；Agent 复核的 6 个可比轮次中，transcript 提取的 user/最终 assistant 长度与对应 Hook 记录均为 6/6 一致，且都有 `turn_ended`。因此采用 transcript 路径并删除生产 before/after 采集链。证据见 [docs/spike-agent/INDEX.md](../spike-agent/INDEX.md)。
+
+`sessionStart` 注入和 `sessionEnd` 通知仍是独立 Hook。Hook timeout、真·Background Agent 和后台 Task Stop 仍是发布门禁。
 
 ## 可靠性边界
 
@@ -118,9 +123,8 @@ Gateway 未收到 `messages` 时，新 session 首次 capture 存在同毫秒竞
 ```mermaid
 flowchart TD
   SS[sessionStart] --> C[L3/L2 context]
-  BP[beforeSubmitPrompt] --> J[pending JSONL]
-  AR[afterAgentResponse x N] --> J
-  ST[stop] --> J
+  ST[stop] --> T[read last transcript turn]
+  T --> J[pending JSONL]
   ST --> O[detached one-shot]
   SE[sessionEnd] --> O
   O --> L[global delivery lock]
@@ -130,7 +134,7 @@ flowchart TD
   I[installer] --> CFG[Hooks / Rule / MCP config]
 ```
 
-若 transcript spike 通过，`stop` 从 transcript 生成相同的 user、assistant、stop 记录，并用一个 Buffer 一次追加；它替换图中的 before/after 采集链，不增加另一种 pending 格式。
+`stop` 从 transcript 生成 user、assistant、stop 记录，并用一个 Buffer 一次追加，不增加另一种 pending 格式。
 
 | 模块 | 输入 | 输出 |
 | --- | --- | --- |
@@ -143,23 +147,21 @@ flowchart TD
 
 ## Hook 前台行为
 
-JSONL fallback 使用：
-
 | Hook | 前台行为 |
 | --- | --- |
 | `sessionStart` | 读取并返回 L3/L2 context；不 spawn |
-| `beforeSubmitPrompt` | O_APPEND 一条 user 记录 |
-| `afterAgentResponse` | O_APPEND 一条 assistant 记录；不 spawn |
-| `stop` | O_APPEND 一条 stop 记录；spawn detached one-shot |
+| `stop` | 读取 `transcript_path` 最后完整轮次；一次 O_APPEND 写入 user、assistant、stop；spawn detached one-shot |
 | `sessionEnd` | spawn 带 `sessionEnd` 请求的 detached one-shot |
 
-`afterAgentResponse` 不包含 user prompt，因此 fallback 必须保留 `beforeSubmitPrompt`。每条 assistant message 各追加一次，由 one-shot 折叠，不按文本去重。由于不使用 turn lock，必须由 spike 证明所有 response Hook 在 Cursor 触发 `stop` 前已完成追加并退出。
+生产安装器不注册 `beforeSubmitPrompt`、`afterAgentResponse`。升级时删除本 Adapter 旧版本在这两个事件下的 marker-owned command，保留其他工具配置。
 
-v1 只 capture 顶层交互式 Agent。子代理和后台 Agent 由 spike 验证出的稳定字段排除；未验证前不把它们当独立用户轮次。
+transcript 解析以最后一个 `turn_ended` 为边界，只处理前一个 `turn_ended` 之后的最后一轮：提取最后一条 user message 的 `<user_query>` 正文，以及该轮最后一条非空 assistant text。最后边界后若已有未完成 user/assistant、文件读取期间 size/mtime/ctime/inode 变化、路径不在 `agent-transcripts` 或文件超过 16 MiB，均不写 pending，但仍 fail-open 并唤醒 worker。
 
-所有 Hook fail-open：内部异常写 bounded 日志并退出 0。`beforeSubmitPrompt` 返回 `{ "continue": true }`；只观察事件且无输出字段的 Hook 返回 `{}`；其他 Hook 返回各自 schema 的最小非阻断响应。
+v1 目标只 capture 顶层交互式 Agent；不注册 `subagentStart` / `subagentStop`。真·Background Agent 的 `stop` 行为尚未验证，因此生产发布门禁未关闭。
 
-前台不承诺固定毫秒数。性能验收只检查前台没有网络、Gateway 启动、健康检查、pending 读取或全目录扫描。
+所有 Hook fail-open：内部异常写 bounded 日志并退出 0。只观察事件且无输出字段的 Hook 返回 `{}`；其他 Hook 返回各自 schema 的最小非阻断响应。
+
+前台不承诺固定毫秒数。性能验收只检查前台没有网络、Gateway 启动、健康检查、旧 pending 读取或全目录扫描。
 
 ## 轻量注入与检索
 
@@ -196,7 +198,7 @@ stdio MCP bridge 只注册：
 
 ```text
 session_key = cursor:<conversation_id>
-pending_key = sha256(canonical_json([conversation_id, generation_id]))
+pending_key = sha256(canonical_json([conversation_id, stop_generation_id]))
 ```
 
 Cursor 没有约束 ID 的字符集和长度。Hook 输入不直接拼接路径；哈希输入使用 UTF-8，输出使用小写十六进制。conversation、generation 可从 pending 首条有效记录读取，不靠文件名排障。
@@ -217,7 +219,7 @@ Cursor 没有约束 ID 的字符集和长度。Hook 输入不直接拼接路径�
 {"v":1,"event":"stop","conversation_id":"...","generation_id":"...","status":"completed","at_ms":0}
 ```
 
-每个 Hook 把完整 UTF-8 行编码为一个 Buffer，以 `O_APPEND | O_CREAT` 打开同一路径，只发起一次 `write`，不读旧内容、不加 turn lock、不 `fsync`。该并发追加契约只适用于目标平台的本地文件系统。实现检查 `bytesWritten`；短写只记日志，不重试当前尾部，当前事件可能丢失。
+`stop` 把三条完整 UTF-8 记录编码为一个 Buffer，以 `O_APPEND | O_CREAT` 打开同一路径，只发起一次 `write`，不读旧 pending、不加 turn lock、不 `fsync`。该追加契约只适用于目标平台的本地文件系统。实现检查 `bytesWritten`；短写只记日志，不重试当前尾部，当前轮可能丢失。
 
 每条记录以换行开头和结尾。若进程在写入中崩溃，下一条记录仍可从下一行恢复；one-shot 跳过空行和无法解析的行。
 
@@ -228,11 +230,11 @@ one-shot 按文件顺序折叠：
 3. 第一条 stop 封口。
 4. 同时存在 user、至少一条 assistant 和 stop 才可投递。
 
-多条 assistant 以 `\n\n` 连接为 `assistant_content`。重复 user、重复 stop 和 stop 后记录不生成额外状态；安装器负责防止双作用域造成正常事件重复执行。
+重复 user、重复 stop 和 stop 后记录不生成额外状态；安装器负责防止双作用域造成正常事件重复执行。
 
 不创建 outbox、failed、turn lock、状态索引、sequence、claim、end marker 或 recover cursor。
 
-one-shot 只在自己获得全局锁后读取和删除文件。由于 Hook 不持该锁，设计还依赖 response-before-stop 门禁；否则 late response 可能写入已经 unlink 的 inode，造成静默丢失。
+one-shot 只在自己获得全局锁后读取和删除文件。单次 write 在 spawn 前完成，不存在跨 Hook late response 写入已删除文件的依赖。
 
 ## Detached one-shot
 
@@ -307,7 +309,7 @@ Cursor 会合并用户级和项目级 Hook，同一事件下两边命令都会�
 
 1. 安装到用户选择的一个作用域。
 2. 安装前同时解析项目级与用户级 `hooks.json`。
-3. 安装器写入含固定标识 `tencentdb-memory-cursor-v1` 的规范 command；检查两个作用域时按该标识识别 Adapter，不依赖相对/绝对路径相同。
+3. 安装器写入含固定标识 `tencentdb-memory-cursor-v1` 的规范 command；Hook 按完整规范 command 精确识别，MCP 按专用 env marker 识别，不做任意子串或尾缀匹配。
 4. 若另一作用域已有该标识，拒绝重复安装并报告路径。
 5. 同一作用域重复安装保持不变。
 6. 只增删 Adapter 自己的 command、MCP 名称和 Rule 文件。
@@ -320,13 +322,16 @@ Enterprise/Team 配置不在本地安装器的可控范围；发现固定 Adapte
 
 ### 单元测试
 
-- 并发 Hook 各以一次 O_APPEND 写入，完整 write 不互相覆盖。
+- transcript 只提取最后一个 `turn_ended` 封口的轮次。
+- 最后封口后已有未完成轮次、路径越界、读取中变化或超过 16 MiB 时拒绝 capture。
+- `<user_query>` 包裹正文与最后一条非空 assistant text 可稳定提取。
+- `stop` 用一次 O_APPEND 写入完整 user、assistant、stop。
 - 崩溃截断行不妨碍后续完整行被折叠。
-- 多条 assistant 按 pending 顺序连接。
 - user、assistant 或 stop 缺失时不投递；24 小时后由下次 one-shot 清理。
 - 完整 pending 不按 TTL 清理。
-- `stop` spawn；`sessionStart` 和 `afterAgentResponse` 不 spawn。
+- `stop` 即使 transcript 解析失败也 spawn；`sessionStart` 不 spawn。
 - bounded logger 不写完整内容，失败时 fail-open。
+- spike recorder 只保存 transcript path 哈希，不保存绝对路径。
 
 ### 契约测试
 
@@ -338,6 +343,7 @@ Enterprise/Team 配置不在本地安装器的可控范围；发现固定 Adapte
 - `gatewayRequest()` 的 JSON、Bearer、timeout 与错误映射符合 Gateway。
 - `/session/end` 失败不产生持久状态。
 - 双作用域已有固定 Adapter 标识时安装器拒绝新增。
+- 安装升级删除本 Adapter 旧 before/after Hook，保留其他 command。
 
 ### 集成与发布证据
 
@@ -345,5 +351,5 @@ Enterprise/Team 配置不在本地安装器的可控范围；发现固定 Adapte
 - one-shot 崩溃时完整 pending 保留；有后续 `stop` 或 `sessionEnd` 时可推进。
 - L3 缺失但 L2 存在时仍注入绝对路径导航。
 - 两个只读 MCP 工具可见并能返回结果。
-- 前台 Hook 不执行 HTTP、Gateway 启动、健康检查、pending 读取或全量扫描。
-- Hook spike 留存主/子/后台 Agent、首轮注入、transcript、事件关联和 detached 存活证据。
+- 前台 Hook 不执行 HTTP、Gateway 启动、健康检查、旧 pending 读取或全量扫描。
+- Hook spike 留存主/子/后台 Agent、首轮注入、transcript、事件关联和 detached 存活证据 → 见 [docs/spike/INDEX.md](../spike/INDEX.md)。

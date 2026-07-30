@@ -39,5 +39,8 @@ describe("Cursor Hook spike recorder", () => {
       transcript_exists: false,
     });
     expect(raw).not.toContain("敏感回答正文");
+    expect(raw).not.toContain("/missing/transcript.jsonl");
+    expect(event.transcript_path).toBeUndefined();
+    expect(event.transcript_path_hash).toMatch(/^[0-9a-f]{64}$/);
   });
 });

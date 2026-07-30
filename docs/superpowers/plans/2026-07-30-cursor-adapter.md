@@ -4,7 +4,7 @@
 
 **Goal:** 实现 `docs/316base/prd.md` 定义的 Cursor 本地 Adapter，并保留真实 Cursor Hook spike 作为发布门禁。
 
-**Architecture:** 单个 `memory-tencentdb-cursor` CLI 承载 Hook、detached one-shot、stdio MCP、安装和 spike 子命令。Hook 只追加每轮 JSONL 或读取 L3/L2；one-shot 在 `proper-lockfile` 全局锁内启动 Gateway、串行投递并清理；安装器只合并 Adapter 自己的配置。
+**Architecture:** 单个 `memory-tencentdb-cursor` CLI 承载 Hook、detached one-shot、stdio MCP、安装和 spike 子命令。`stop` 读取 transcript 最后一轮并用一个 Buffer 追加完整 JSONL；one-shot 在 `proper-lockfile` 全局锁内启动 Gateway、串行投递并清理；安装器只合并 Adapter 自己的配置。
 
 **Tech Stack:** TypeScript、Node.js 22、Vitest、`proper-lockfile@4.1.2`、`@modelcontextprotocol/sdk@1.30.0`
 
@@ -15,7 +15,7 @@
 - 前台 Hook 不执行网络、Gateway 启动、健康检查和 pending 全量扫描。
 - capture 只发送 `user_content`、`assistant_content`、`session_key`。
 - 所有新增关键测试使用中文简述注释，标点使用英文。
-- 真实 Cursor spike 未形成证据前，不宣称发布验收完成。
+- Hook timeout 与真·Background Agent 未形成证据前，不宣称发布验收完成。
 
 ---
 
@@ -82,6 +82,8 @@ Expected: PASS.
 **Interfaces:**
 - Produces: `pendingKey(conversationId, generationId): string`
 - Produces: `appendPendingEvent(path, event): Promise<void>`
+- Produces: `extractTranscriptTurn(content): TranscriptTurn`
+- Produces: `appendTranscriptTurn(path, payload): Promise<void>`
 - Produces: `foldPending(text): FoldedCapture | undefined`
 - Produces: `buildSessionContext(dataDir): Promise<string | undefined>`
 - Produces: `handleHook(payload, deps): Promise<Record<string, unknown>>`
@@ -109,7 +111,7 @@ it("只有 stop 唤醒 worker", async () => {
 Run: `npx vitest run src/adapters/cursor/pending.test.ts src/adapters/cursor/hooks.test.ts`
 Expected: FAIL because modules do not exist.
 
-- [x] **Step 3: Implement one-write O_APPEND and fail-open Hook routing**
+- [x] **Step 3: Implement transcript stop-only one-write O_APPEND and fail-open Hook routing**
 
 ```ts
 const line = Buffer.from(`\n${JSON.stringify(event)}\n`, "utf8");
@@ -284,3 +286,7 @@ Expected: build exit 0 and help lists `hook`, `worker`, `mcp`, `install`, `unins
 - [x] **Step 4: Re-read PRD acceptance criteria**
 
 Expected: code and automated tests cover criteria 1-8 and 10; criterion 9 remains explicitly pending until a human-driven real Cursor IDE spike records evidence.
+
+Spike evidence landed: [docs/spike/2026-07-30-linux-cursor-3.12.30.md](../../spike/2026-07-30-linux-cursor-3.12.30.md). Criterion 9 is **partial** (detached / first-turn / transcript / sync subagent OK; generation merge caveat; bg Task Stop missing; true Background Agent + Hook timeout untested).
+
+Agent transcript 复核见 [docs/spike-agent/INDEX.md](../../spike-agent/INDEX.md)：6/6 user 与最终 assistant 长度匹配，均有 `turn_ended`。实现已选择 transcript stop-only 并迁移删除旧 before/after Hook；真·Background Agent 与 Hook timeout 仍是发布门禁。

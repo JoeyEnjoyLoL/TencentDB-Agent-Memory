@@ -1,0 +1,100 @@
+核对 Gateway 侧 /capture 与 /session/end 的语义，确认几个疑点。
+
+核对 handleTurnCommitted 是否自带去重，避免误判。
+
+读完 22 个文件（含测试），跑了测试与 typecheck，并把代码与他们自己的 spike 报告、Gateway/Core 侧实现做了交叉核对。
+
+总评
+工程素养明显在线：66 个测试全绿、每个 case 都带「为什么」注释、fail-open 贯彻、O_APPEND 单次写、dev/ino/mtimeNs 双读校验（pending.ts:215）、注入前 escapeXmlTags。但有 3 处会在生产上丢/重记忆，其中 1 处是他们自己的 spike 报告已经证否的假设。
+
+#	级别	问题	位置
+1
+P0
+capture 是 at-least-once，但下游两层去重在本路径全部失效
+worker.ts:165
+2
+P0
+pending 保留（重试）时仍发 /session/end，且失败不重试
+worker.ts:195→198
+3
+P0
+后台/子代理防护在 stop 上是空操作（spike 已证 stop 无该字段）
+hooks.ts:20
+4
+P1
+锁 compromised 后 release() 必抛 ERELEASED，吞掉原始错误
+worker.ts:209
+5
+P1
+retries.forever + 每轮一个 detached worker → 网关故障时进程堆积
+worker.ts:118
+6
+P2
+status 记了不用，中断轮次按完整轮次入库
+hooks.ts:76
+7
+P2
+JSON.parse 报错原文入日志，会带 payload 片段
+cli.ts:184
+8
+P2
+新增 2 条 typecheck 错误；Record<string, any> 关掉了 installer 类型检查
+installer.ts:28,174
+9
+P3
+spike / spike-sentinel 随生产 CLI 发布，且写进 HELP
+cli.ts:26,218
+10
+P3
+uninstall 非严格逆操作（留 version 与空数组）
+installer.ts:149,243
+11
+P3
+transcript 路径校验只查目录名含 agent-transcripts；HOME 兜底 /tmp
+pending.ts:191, config.ts:23
+P0-1：重复投递没有幂等键
+worker 对 5xx/网络错误保留文件重试（worker.ts:190），这是对的。问题在于「网关已处理、响应丢了」这一类重试会产生重复 L0，而 Core 的两层去重在这条路径上都是失效的：
+
+去重层	依赖	Cursor 路径实际情况
+位置切片
+originalUserMessageCount
+CaptureRequest 里没有这个字段，网关也没传（server.ts:402）
+时间戳游标
+messages[].timestamp
+adapter 只发 3 个字段（worker.ts:165），网关补的 messages 无 timestamp → 提取时赋 Date.now()，恒大于游标
+第二点是 l0-recorder.ts:155 注释自己写明的行为。另外 unlink 失败被静默吞掉（worker.ts:174），也会导致下一轮重发。
+
+建议：pending 事件里已经有 at_ms，把 messages: [{role,content,timestamp: at_ms}] 一起发出去，时间戳游标层立刻恢复生效；顺带给 unlink 失败补一条 log。
+
+P0-2：session/end 抢在未投递的 capture 之前
+500 / 网络错
+stop 写 pending
+worker 取锁
+POST /capture
+break, 文件保留
+POST /session/end
+core.handleSessionEnd → flush + 蒸馏
+最后几轮未进 L0且 sessionEnd 不重试, 永久丢失
+/session/end 会真的触发 flush（server.ts:475），而 sessionEndKey 只存在于命令行参数里，失败只记一行日志（worker.ts:203）——测试甚至把这点固化成了预期行为（worker.test.ts:214「失败后不写持久状态」）。
+
+建议：capture 有 retained 时跳过 /session/end；并把 sessionEndKey 落成 pending 目录里的一个 marker 文件，让下一次 worker 接着重试。
+
+P0-3：防护字段在唯一的采集事件上不存在
+
+hooks.ts
+Lines 20-24
+function isTopLevelInteractive(payload: HookPayload): boolean {
+  if (payload.is_background_agent === true) return false;
+  if (text(payload.parent_conversation_id)) return false;
+  return true;
+}
+他们自己的 spike 报告字段矩阵写着：before / after / stop —— 无 is_background_agent、parent_conversation_id（docs/spike/2026-07-30-linux-cursor-3.12.30.md:111），且真·Background Agent 采到 0 条样本。采集只发生在 stop，所以这个函数对采集路径恒返回 true，后台 Agent 的轮次会照样进用户记忆。hooks.test.ts:178 用 beforeSubmitPrompt/afterAgentResponse 构造的测试制造了「已防护」的假象——而这两个事件 installer 根本没注册（installer.ts:15）。
+
+建议：在 sessionStart（该事件确实带 is_background_agent）把判定结果落一个 per-conversation marker，stop 时查 marker；同时删掉 beforeSubmitPrompt/afterAgentResponse 这两段死代码。
+
+P1 补充
+#4：proper-lockfile 在 compromise 时置 lock.released = true（lockfile.js:187），随后 release() 走 ERELEASED 分支（:255）。finally { await release() } 无 catch，会把 try 块里的真实异常替换成 ERELEASED；detached 进程 stdio 是 ignore，stderr 直接进黑洞。加 .catch() 并落日志即可。
+#5：retries.forever: true 且无总体截止时间。网关挂掉时每轮 stop 都 spawn 一个 worker，各自串行排队并各自吃 30s 的 ctl start 超时，进程只增不减。建议给 retries 设上限，或用一个「已有 worker 排队」哨兵文件直接退出。
+建议合并门禁
+P0-1 / P0-2 / P0-3 修完再合；P1-4 是两行改动，顺手带上。#9 的 spike 命令建议在发版前从生产 CLI 摘掉——它现在会往 additional_context 注入 SPIKE_MARKER。
+

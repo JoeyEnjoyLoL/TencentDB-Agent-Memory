@@ -13,7 +13,7 @@ function runtime(payload = "{}"): CursorCliRuntime {
     uninstall: vi.fn().mockResolvedValue(undefined),
     recordSpike: vi.fn().mockResolvedValue("/spike/hook-events.jsonl"),
     writeDetachedEvidence: vi.fn().mockResolvedValue(undefined),
-    appendPending: vi.fn().mockResolvedValue("/pending/key.jsonl"),
+    appendTranscript: vi.fn().mockResolvedValue("/pending/key.jsonl"),
     buildContext: vi.fn().mockResolvedValue("context"),
     log: vi.fn(),
     env: {},
@@ -45,6 +45,7 @@ describe("memory-tencentdb-cursor CLI", () => {
       conversation_id: "c1",
       generation_id: "g1",
       status: "completed",
+      transcript_path: "/transcript.jsonl",
     }));
 
     expect(await main(["hook", "tencentdb-memory-cursor-v1"], io)).toBe(0);

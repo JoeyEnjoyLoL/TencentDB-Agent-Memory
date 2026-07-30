@@ -35,7 +35,9 @@ describe("Cursor Adapter installer", () => {
     await writeFile(path.join(home, ".cursor", "hooks.json"), JSON.stringify({
       version: 1,
       hooks: {
-        stop: [{ command: `existing ${CURSOR_ADAPTER_MARKER}` }],
+        stop: [{
+          command: `/bin/memory-tencentdb-cursor hook ${CURSOR_ADAPTER_MARKER}`,
+        }],
       },
     }));
 
@@ -194,6 +196,67 @@ describe("Cursor Adapter installer", () => {
 
     expect(second).toBe(first);
     expect(first).toContain("'/path with space/memory-tencentdb-cursor'");
+  });
+
+  // transcript 方案只保留 sessionStart stop sessionEnd 三个生产 Hook.
+  it("移除旧 before after Adapter Hook 并保留其他命令", async () => {
+    const options = {
+      scope: "project" as const,
+      ...await workspace(),
+      executablePath: "/bin/memory-tencentdb-cursor",
+    };
+    const hooksPath = path.join(options.projectRoot, ".cursor", "hooks.json");
+    await mkdir(path.dirname(hooksPath), { recursive: true });
+    await writeFile(hooksPath, JSON.stringify({
+      version: 1,
+      hooks: {
+        beforeSubmitPrompt: [
+          { command: `/bin/memory-tencentdb-cursor hook ${CURSOR_ADAPTER_MARKER}` },
+          { command: "other-before" },
+          { command: `echo ${CURSOR_ADAPTER_MARKER}-not-owned` },
+          { command: `echo hook ${CURSOR_ADAPTER_MARKER}` },
+        ],
+        afterAgentResponse: [{
+          command: `/bin/memory-tencentdb-cursor hook ${CURSOR_ADAPTER_MARKER}`,
+        }],
+      },
+    }));
+
+    await installCursorAdapter(options);
+
+    const hooks = await readJson(hooksPath);
+    expect(hooks.hooks.beforeSubmitPrompt).toEqual([
+      { command: "other-before" },
+      { command: `echo ${CURSOR_ADAPTER_MARKER}-not-owned` },
+      { command: `echo hook ${CURSOR_ADAPTER_MARKER}` },
+    ]);
+    expect(hooks.hooks.afterAgentResponse).toEqual([]);
+    expect(JSON.stringify(hooks.hooks.stop)).toContain(CURSOR_ADAPTER_MARKER);
+  });
+
+  // 同 executable/args 但无所有权 marker 的 MCP 仍属于用户.
+  it("拒绝覆盖同路径但无 marker 的 MCP", async () => {
+    const options = {
+      scope: "project" as const,
+      ...await workspace(),
+      executablePath: "/bin/memory-tencentdb-cursor",
+    };
+    const mcpPath = path.join(options.projectRoot, ".cursor", "mcp.json");
+    await mkdir(path.dirname(mcpPath), { recursive: true });
+    const original = {
+      mcpServers: {
+        "tencentdb-memory": {
+          command: options.executablePath,
+          args: ["mcp"],
+        },
+      },
+    };
+    await writeFile(mcpPath, JSON.stringify(original));
+
+    await expect(installCursorAdapter(options)).rejects.toThrow(/MCP.*conflict/i);
+    await uninstallCursorAdapter(options);
+
+    expect(await readJson(mcpPath)).toEqual(original);
   });
 
   // 卸载只删除 Adapter 自己的条目和 Rule.

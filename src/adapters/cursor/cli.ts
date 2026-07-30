@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
-import type { PendingEvent } from "./pending.js";
 import { resolveCursorConfig, type CursorConfig } from "./config.js";
 import { buildSessionContext } from "./context.js";
 import { handleHook } from "./hooks.js";
@@ -12,7 +11,7 @@ import {
 } from "./installer.js";
 import { createCursorLogger } from "./logger.js";
 import { runCursorMcpServer } from "./mcp.js";
-import { appendPendingEvent } from "./pending.js";
+import { appendTranscriptTurn } from "./pending.js";
 import { recordSpikeEvent } from "./spike.js";
 import { runWorker, type WorkerOptions } from "./worker.js";
 
@@ -38,10 +37,7 @@ export interface CursorCliRuntime {
   uninstall: (options: CursorInstallOptions) => Promise<void>;
   recordSpike: typeof recordSpikeEvent;
   writeDetachedEvidence: (outputDir: string) => Promise<void>;
-  appendPending: (
-    rootDir: string,
-    event: PendingEvent,
-  ) => Promise<string>;
+  appendTranscript: typeof appendTranscriptTurn;
   buildContext: (dataDir: string) => Promise<string | undefined>;
   log: (event: string, fields?: Record<string, unknown>) => void;
   env: Record<string, string | undefined>;
@@ -116,7 +112,7 @@ export function createCursorCliRuntime(options: {
         { encoding: "utf8", mode: 0o600 },
       );
     },
-    appendPending: appendPendingEvent,
+    appendTranscript: appendTranscriptTurn,
     buildContext: buildSessionContext,
     log,
     env,
@@ -172,7 +168,7 @@ export async function main(
       const result = await handleHook(payload, {
         dataDir: config.dataDir,
         rootDir: config.rootDir,
-        append: runtime.appendPending,
+        appendTranscript: runtime.appendTranscript,
         spawnWorker: (sessionEndKey) => {
           runtime.spawnDetached([
             "worker",
@@ -226,7 +222,14 @@ export async function main(
       if (payload.hook_event_name === "stop") {
         runtime.spawnDetached(["spike-sentinel", outputDir]);
       }
-      runtime.writeStdout("{}\n");
+      runtime.writeStdout(`${JSON.stringify(
+        payload.hook_event_name === "sessionStart"
+          ? {
+              additional_context:
+                "SPIKE_MARKER_tencentdb-memory-cursor-v1 first_turn_visible",
+            }
+          : {},
+      )}\n`);
       return 0;
     }
     if (command === "spike-sentinel") {

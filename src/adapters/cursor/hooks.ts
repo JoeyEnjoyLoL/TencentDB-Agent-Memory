@@ -1,4 +1,4 @@
-import { appendPendingEvent, type PendingEvent } from "./pending.js";
+import { appendTranscriptTurn } from "./pending.js";
 import { buildSessionContext } from "./context.js";
 
 export type HookPayload = Record<string, unknown>;
@@ -6,7 +6,7 @@ export type HookPayload = Record<string, unknown>;
 export interface HookDependencies {
   dataDir: string;
   rootDir: string;
-  append?: (rootDir: string, event: PendingEvent) => Promise<string>;
+  appendTranscript?: typeof appendTranscriptTurn;
   spawnWorker: (sessionEndKey?: string) => void;
   buildContext?: (dataDir: string) => Promise<string | undefined>;
   log: (event: string, fields?: Record<string, unknown>) => void;
@@ -36,7 +36,7 @@ export async function handleHook(
 
   if (!isTopLevelInteractive(payload)) return response;
 
-  const append = deps.append ?? appendPendingEvent;
+  const appendTranscript = deps.appendTranscript ?? appendTranscriptTurn;
   const contextBuilder = deps.buildContext ?? buildSessionContext;
   const now = deps.now ?? Date.now;
 
@@ -53,48 +53,36 @@ export async function handleHook(
       return {};
     }
 
-    const generationId = text(payload.generation_id);
-    if (!conversationId || !generationId) return response;
-
     if (event === "beforeSubmitPrompt") {
-      const prompt = text(payload.prompt);
-      if (prompt) {
-        await append(deps.rootDir, {
-          v: 1,
-          event: "user",
-          conversation_id: conversationId,
-          generation_id: generationId,
-          text: prompt,
-          at_ms: now(),
-        });
-      }
       return { continue: true };
     }
 
     if (event === "afterAgentResponse") {
-      const assistant = text(payload.text);
-      if (assistant) {
-        await append(deps.rootDir, {
-          v: 1,
-          event: "assistant",
-          conversation_id: conversationId,
-          generation_id: generationId,
-          text: assistant,
-          at_ms: now(),
-        });
-      }
       return {};
     }
 
     if (event === "stop") {
-      await append(deps.rootDir, {
-        v: 1,
-        event: "stop",
-        conversation_id: conversationId,
-        generation_id: generationId,
-        status: text(payload.status) ?? "completed",
-        at_ms: now(),
-      });
+      try {
+        if (!conversationId) throw new Error("stop conversation_id is missing");
+        const generationId = text(payload.generation_id);
+        if (!generationId) throw new Error("stop generation_id is missing");
+        const transcriptPath = text(payload.transcript_path);
+        if (!transcriptPath) throw new Error("stop transcript_path is missing");
+        await appendTranscript(
+          deps.rootDir,
+          transcriptPath,
+          conversationId,
+          generationId,
+          text(payload.status) ?? "completed",
+          now(),
+        );
+      } catch (error) {
+        deps.log("stop_capture_error", {
+          error: error instanceof Error
+            ? error.message.slice(0, 300)
+            : String(error).slice(0, 300),
+        });
+      }
       deps.spawnWorker();
       return {};
     }

@@ -14,8 +14,6 @@ const MCP_NAME = "tencentdb-memory";
 const RULE_NAME = "tencentdb-memory.mdc";
 const HOOK_EVENTS = [
   "sessionStart",
-  "beforeSubmitPrompt",
-  "afterAgentResponse",
   "stop",
   "sessionEnd",
 ] as const;
@@ -88,26 +86,30 @@ function adapterCommand(executablePath: string): string {
   ].join(" ");
 }
 
-function containsMarker(value: unknown): boolean {
-  return JSON.stringify(value)?.includes(CURSOR_ADAPTER_MARKER) ?? false;
+function isOwnedHook(value: unknown, executablePath: string): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const command = (value as JsonObject).command;
+  return command === adapterCommand(executablePath);
 }
 
-function isOwnedMcp(
+function containsOwnedHook(
   value: unknown,
   executablePath: string,
 ): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const entry = value as JsonObject;
-  const args = entry.args;
-  return (
-    entry.env?.MEMORY_TENCENTDB_CURSOR_ADAPTER === CURSOR_ADAPTER_MARKER ||
-    (
-      entry.command === executablePath &&
-      Array.isArray(args) &&
-      args.length === 1 &&
-      args[0] === "mcp"
-    )
+  const hooks = (value as JsonObject).hooks;
+  if (!hooks || typeof hooks !== "object" || Array.isArray(hooks)) return false;
+  return Object.values(hooks).some(
+    (commands) =>
+      Array.isArray(commands) &&
+      commands.some((hook) => isOwnedHook(hook, executablePath)),
   );
+}
+
+function isOwnedMcp(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const entry = value as JsonObject;
+  return entry.env?.MEMORY_TENCENTDB_CURSOR_ADAPTER === CURSOR_ADAPTER_MARKER;
 }
 
 const RULE_CONTENT = `---
@@ -136,7 +138,7 @@ export async function installCursorAdapter(
     "hooks.json",
   );
   const otherHooks = await readJson(otherHooksPath);
-  if (containsMarker(otherHooks)) {
+  if (containsOwnedHook(otherHooks, options.executablePath)) {
     throw new Error(
       `${CURSOR_ADAPTER_MARKER} already exists in ${otherHooksPath}`,
     );
@@ -156,6 +158,12 @@ export async function installCursorAdapter(
     throw new Error("hooks conflict: expected a plain object");
   }
   hooksConfig.hooks ??= {};
+  for (const [event, commands] of Object.entries(hooksConfig.hooks)) {
+    if (!Array.isArray(commands)) continue;
+    hooksConfig.hooks[event] = commands.filter(
+      (hook) => !isOwnedHook(hook, options.executablePath),
+    );
+  }
   const command = adapterCommand(options.executablePath);
   for (const event of HOOK_EVENTS) {
     const current = hooksConfig.hooks[event];
@@ -163,7 +171,7 @@ export async function installCursorAdapter(
       throw new Error(`Hook ${event} conflict: expected an array`);
     }
     const existing = current ?? [];
-    if (!existing.some(containsMarker)) {
+    if (!existing.some((hook) => isOwnedHook(hook, options.executablePath))) {
       existing.push({ command });
     }
     hooksConfig.hooks[event] = existing;
@@ -185,7 +193,7 @@ export async function installCursorAdapter(
   const currentMcp = mcpConfig.mcpServers[MCP_NAME];
   if (
     currentMcp !== undefined &&
-    !isOwnedMcp(currentMcp, options.executablePath)
+    !isOwnedMcp(currentMcp)
   ) {
     throw new Error(`MCP ${MCP_NAME} conflict: entry is not owned by ${CURSOR_ADAPTER_MARKER}`);
   }
@@ -228,7 +236,7 @@ export async function uninstallCursorAdapter(
     for (const [event, commands] of Object.entries(hooksConfig.hooks)) {
       if (!Array.isArray(commands)) continue;
       hooksConfig.hooks[event] = commands.filter(
-        (command) => !containsMarker(command),
+        (command) => !isOwnedHook(command, options.executablePath),
       );
     }
   }
@@ -244,7 +252,7 @@ export async function uninstallCursorAdapter(
     !Array.isArray(mcpConfig.mcpServers)
   ) {
     const currentMcp = mcpConfig.mcpServers[MCP_NAME];
-    if (isOwnedMcp(currentMcp, options.executablePath)) {
+    if (isOwnedMcp(currentMcp)) {
       delete mcpConfig.mcpServers[MCP_NAME];
     }
   }

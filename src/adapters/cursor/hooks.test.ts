@@ -76,12 +76,12 @@ describe("Cursor Hook", () => {
 
   // 前台仅在 stop 和 sessionEnd 唤醒 detached one-shot.
   it("只在 stop 和 sessionEnd 唤醒 worker", async () => {
-    const append = vi.fn().mockResolvedValue("/pending/key.jsonl");
+    const appendTranscript = vi.fn().mockResolvedValue("/pending/key.jsonl");
     const spawnWorker = vi.fn();
     const deps = {
       dataDir: "/data",
       rootDir: "/root",
-      append,
+      appendTranscript,
       spawnWorker,
       buildContext: vi.fn().mockResolvedValue("context"),
       log: vi.fn(),
@@ -107,6 +107,7 @@ describe("Cursor Hook", () => {
       conversation_id: "c1",
       generation_id: "g1",
       status: "completed",
+      transcript_path: "/transcript.jsonl",
     }, deps);
     await handleHook({
       hook_event_name: "sessionEnd",
@@ -116,6 +117,15 @@ describe("Cursor Hook", () => {
 
     expect(spawnWorker).toHaveBeenNthCalledWith(1);
     expect(spawnWorker).toHaveBeenNthCalledWith(2, "cursor:c1");
+    expect(appendTranscript).toHaveBeenCalledTimes(1);
+    expect(appendTranscript).toHaveBeenCalledWith(
+      "/root",
+      "/transcript.jsonl",
+      "c1",
+      "g1",
+      "completed",
+      1,
+    );
   });
 
   // sessionEnd 官方事件可只提供 session_id, 仍须发送结束通知.
@@ -129,7 +139,7 @@ describe("Cursor Hook", () => {
     }, {
       dataDir: "/data",
       rootDir: "/root",
-      append: vi.fn(),
+      appendTranscript: vi.fn(),
       spawnWorker,
       buildContext: vi.fn(),
       log: vi.fn(),
@@ -139,14 +149,39 @@ describe("Cursor Hook", () => {
     expect(spawnWorker).toHaveBeenCalledWith("cursor:session-1");
   });
 
+  // stop 字段异常时仍须 fail-open 唤醒 worker, 推进其他 pending.
+  it("stop 缺 generation_id 时记录错误并唤醒 worker", async () => {
+    const spawnWorker = vi.fn();
+    const log = vi.fn();
+
+    await handleHook({
+      hook_event_name: "stop",
+      conversation_id: "c1",
+      transcript_path: "/agent-transcripts/c1.jsonl",
+    }, {
+      dataDir: "/data",
+      rootDir: "/root",
+      appendTranscript: vi.fn(),
+      spawnWorker,
+      buildContext: vi.fn(),
+      log,
+    });
+
+    expect(spawnWorker).toHaveBeenCalledOnce();
+    expect(log).toHaveBeenCalledWith(
+      "stop_capture_error",
+      expect.objectContaining({ error: expect.stringContaining("generation_id") }),
+    );
+  });
+
   // 后台或子代理事件不能混入顶层用户轮次.
   it("跳过可识别的后台与子代理 capture", async () => {
-    const append = vi.fn();
+    const appendTranscript = vi.fn();
     const spawnWorker = vi.fn();
     const deps = {
       dataDir: "/data",
       rootDir: "/root",
-      append,
+      appendTranscript,
       spawnWorker,
       buildContext: vi.fn(),
       log: vi.fn(),
@@ -168,33 +203,58 @@ describe("Cursor Hook", () => {
       parent_conversation_id: "parent",
     }, deps);
 
-    expect(append).not.toHaveBeenCalled();
+    expect(appendTranscript).not.toHaveBeenCalled();
     expect(spawnWorker).not.toHaveBeenCalled();
   });
 
-  // 内部失败只记摘要并放行当前 Cursor 操作.
+  // sessionStart 内部失败只记摘要并放行当前 Cursor 操作.
   it("内部异常 fail-open", async () => {
     const log = vi.fn();
     const result = await handleHook({
-      hook_event_name: "beforeSubmitPrompt",
+      hook_event_name: "sessionStart",
       conversation_id: "c1",
-      generation_id: "g1",
-      prompt: "不会出现在日志的正文",
     }, {
       dataDir: "/data",
       rootDir: "/root",
-      append: vi.fn().mockRejectedValue(new Error("disk full")),
+      appendTranscript: vi.fn(),
       spawnWorker: vi.fn(),
+      buildContext: vi.fn().mockRejectedValue(new Error("disk full")),
+      log,
+      now: () => 1,
+    });
+
+    expect(result).toEqual({});
+    expect(log).toHaveBeenCalledWith("hook_error", expect.objectContaining({
+      event: "sessionStart",
+      error: "disk full",
+    }));
+  });
+
+  // transcript 解析失败也必须唤醒 worker 推进其他完整 pending.
+  it("stop transcript 失败时仍唤醒 worker", async () => {
+    const spawnWorker = vi.fn();
+    const log = vi.fn();
+
+    const result = await handleHook({
+      hook_event_name: "stop",
+      conversation_id: "c1",
+      generation_id: "g1",
+      status: "completed",
+      transcript_path: "/broken.jsonl",
+    }, {
+      dataDir: "/data",
+      rootDir: "/root",
+      appendTranscript: vi.fn().mockRejectedValue(new Error("invalid transcript")),
+      spawnWorker,
       buildContext: vi.fn(),
       log,
       now: () => 1,
     });
 
-    expect(result).toEqual({ continue: true });
-    expect(log).toHaveBeenCalledWith("hook_error", expect.objectContaining({
-      event: "beforeSubmitPrompt",
-      error: "disk full",
+    expect(result).toEqual({});
+    expect(spawnWorker).toHaveBeenCalledOnce();
+    expect(log).toHaveBeenCalledWith("stop_capture_error", expect.objectContaining({
+      error: "invalid transcript",
     }));
-    expect(JSON.stringify(log.mock.calls)).not.toContain("不会出现在日志的正文");
   });
 });
